@@ -3,7 +3,6 @@ slurm-*.err
 slurm-*.out
 mimic3-benchmarks/
 docs/
-CLAUDE.md
 *.sh
 __pycache__/
 **/__pycache__/
