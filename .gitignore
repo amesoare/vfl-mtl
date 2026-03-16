@@ -1,0 +1,9 @@
+data/
+slurm-*.err
+slurm-*.out
+mimic3-benchmarks/
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+Exploratory Data Analysis.html
