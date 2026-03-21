@@ -1,11 +1,13 @@
-data/
-slurm-*.err
-slurm-*.out
-mimic3-benchmarks/
-docs/
-*.sh
-__pycache__/
-**/__pycache__/
-*.pyc
+.env
 .DS_Store
-Exploratory Data Analysis.html
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.ipynb_checkpoints/
+data/
+slurm-*.out
+slurm-*.err

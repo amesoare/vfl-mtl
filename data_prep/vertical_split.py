@@ -24,9 +24,14 @@ pCO2, pO2, and Bilirubin from the original protocol are absent from the benchmar
 
 Processing per stay:
   1. Load timeseries CSV.
-  2. Forward-fill then backward-fill within-stay missing values.
-  3. Aggregate: compute column mean over all time steps.
-  4. Mean-impute any feature still NaN (never observed in this stay)
+  2. Clip each feature to VALID_LOW/VALID_HIGH from YerevaNN variable_ranges.csv.
+     Note: extract_episodes_from_subjects.py accepts --reference_range_file but never
+     calls remove_outliers_for_variable(), so artefacts survive to the timeseries CSVs
+     (e.g. SpO2=29818%, Weight=3761721 kg). Clipping here is the fix until the raw
+     data is regenerated with the upstream wired up.
+  3. Forward-fill then backward-fill within-stay missing values.
+  4. Aggregate: compute column mean over all time steps.
+  5. Mean-impute any feature still NaN (never observed in this stay)
      using the training-set column mean.
 
 Output (written to --output directory):
@@ -48,6 +53,10 @@ import sys
 import pandas as pd
 import numpy as np
 from pathlib import Path
+
+# YerevaNN benchmark path — used to load variable_ranges.csv
+_BENCHMARK_RESOURCES = Path(__file__).parent.parent / "mimic3-benchmarks" / "mimic3benchmark" / "resources"
+_VARIABLE_RANGES_FILE = _BENCHMARK_RESOURCES / "variable_ranges.csv"
 
 # ---------------------------------------------------------------------------
 # Feature definitions — exact column names used in YerevaNN timeseries CSVs
@@ -94,6 +103,31 @@ SPLITS = ["train", "val", "test"]
 
 
 # ---------------------------------------------------------------------------
+# Clipping — load VALID_LOW / VALID_HIGH from YerevaNN variable_ranges.csv
+# ---------------------------------------------------------------------------
+
+def load_clip_bounds(ranges_file: Path = _VARIABLE_RANGES_FILE) -> dict[str, tuple[float, float]]:
+    """
+    Read VALID_LOW and VALID_HIGH for every feature that has both values defined.
+    Returns {feature_name: (lo, hi)}.
+    """
+    df = pd.read_csv(ranges_file)
+    df = df.rename(columns={"LEVEL2": "VARIABLE", "VALID LOW": "VALID_LOW", "VALID HIGH": "VALID_HIGH"})
+    df = df[["VARIABLE", "VALID_LOW", "VALID_HIGH"]].dropna(subset=["VALID_LOW", "VALID_HIGH"])
+    return {row["VARIABLE"]: (row["VALID_LOW"], row["VALID_HIGH"]) for _, row in df.iterrows()}
+
+
+def clip_features(ts_feat: pd.DataFrame, feature_cols: list,
+                  clip_bounds: dict[str, tuple[float, float]]) -> pd.DataFrame:
+    """Clip each feature column to its VALID_LOW/VALID_HIGH range."""
+    for col in feature_cols:
+        if col in clip_bounds:
+            lo, hi = clip_bounds[col]
+            ts_feat[col] = ts_feat[col].clip(lower=lo, upper=hi)
+    return ts_feat
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -113,7 +147,7 @@ def ts_path(task_dir: Path, split: str, stay_filename: str) -> Path:
 
 def aggregate_stays(task_dir: Path, stays: pd.Series, split: str,
                     feature_cols: list, train_means: pd.Series = None,
-                    verbose: bool = True) -> pd.DataFrame:
+                    clip_bounds: dict = None, verbose: bool = True) -> pd.DataFrame:
     """
     Load each stay's timeseries, forward/backward-fill, compute column mean.
 
@@ -150,6 +184,11 @@ def aggregate_stays(task_dir: Path, stays: pd.Series, split: str,
         for col in feature_cols:
             ts_feat[col] = ts[col] if col in ts.columns else np.nan
 
+        # Clip to VALID_LOW/VALID_HIGH before imputation so artefact values
+        # do not propagate via ffill/bfill or contaminate the stay mean
+        if clip_bounds:
+            ts_feat = clip_features(ts_feat, feature_cols, clip_bounds)
+
         # Within-stay imputation: forward-fill then backward-fill
         ts_feat = ts_feat.ffill().bfill()
 
@@ -178,7 +217,7 @@ def aggregate_stays(task_dir: Path, stays: pd.Series, split: str,
 # Per-site builders
 # ---------------------------------------------------------------------------
 
-def build_site_a(root: Path, output: Path) -> pd.DataFrame:
+def build_site_a(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataFrame:
     """
     Build site_A_vitals.csv from in-hospital-mortality listfiles.
     Label: y_ihm (binary 0/1, 48-hour in-hospital mortality).
@@ -195,11 +234,11 @@ def build_site_a(root: Path, output: Path) -> pd.DataFrame:
         unique_stays = lf["stay"].drop_duplicates()
 
         agg = aggregate_stays(task_dir, unique_stays, split, SITE_A_FEATURES,
-                              train_means=train_means)
+                              train_means=train_means, clip_bounds=clip_bounds)
         if split == "train":
             train_means = agg[SITE_A_FEATURES].mean()
-            agg = aggregate_stays(task_dir, unique_stays, split, SITE_A_FEATURES,
-                                  train_means=train_means)
+            for col in SITE_A_FEATURES:
+                agg[col] = agg[col].fillna(train_means.get(col, 0.0))
 
         # Attach label: one label per unique stay
         lf_dedup = lf.drop_duplicates("stay").set_index("stay")
@@ -214,7 +253,7 @@ def build_site_a(root: Path, output: Path) -> pd.DataFrame:
     return out
 
 
-def build_site_b(root: Path, output: Path) -> pd.DataFrame:
+def build_site_b(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataFrame:
     """
     Build site_B_labs.csv from length-of-stay listfiles.
 
@@ -238,11 +277,11 @@ def build_site_b(root: Path, output: Path) -> pd.DataFrame:
         unique_stays = pd.Series(lf_dedup.index.tolist())
 
         agg = aggregate_stays(task_dir, unique_stays, split, SITE_B_FEATURES,
-                              train_means=train_means)
+                              train_means=train_means, clip_bounds=clip_bounds)
         if split == "train":
             train_means = agg[SITE_B_FEATURES].mean()
-            agg = aggregate_stays(task_dir, unique_stays, split, SITE_B_FEATURES,
-                                  train_means=train_means)
+            for col in SITE_B_FEATURES:
+                agg[col] = agg[col].fillna(train_means.get(col, 0.0))
 
         agg["y_los"] = lf_dedup["y_los"].reindex(agg["stay"].values).values
         agg["split"] = split
@@ -255,7 +294,7 @@ def build_site_b(root: Path, output: Path) -> pd.DataFrame:
     return out
 
 
-def build_site_c(root: Path, output: Path) -> pd.DataFrame:
+def build_site_c(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataFrame:
     """
     Build site_C_composite.csv from phenotyping listfiles.
     Labels: 25 binary ICD phenotype columns.
@@ -277,11 +316,11 @@ def build_site_c(root: Path, output: Path) -> pd.DataFrame:
         unique_stays = pd.Series(lf_dedup.index.tolist())
 
         agg = aggregate_stays(task_dir, unique_stays, split, SITE_C_FEATURES,
-                              train_means=train_means)
+                              train_means=train_means, clip_bounds=clip_bounds)
         if split == "train":
             train_means = agg[SITE_C_FEATURES].mean()
-            agg = aggregate_stays(task_dir, unique_stays, split, SITE_C_FEATURES,
-                                  train_means=train_means)
+            for col in SITE_C_FEATURES:
+                agg[col] = agg[col].fillna(train_means.get(col, 0.0))
 
         for lc in label_cols:
             agg[lc] = lf_dedup[lc].reindex(agg["stay"].values).values
@@ -330,9 +369,12 @@ def main():
 
     output.mkdir(parents=True, exist_ok=True)
 
-    build_site_a(root, output)
-    build_site_b(root, output)
-    build_site_c(root, output)
+    clip_bounds = load_clip_bounds()
+    print(f"Loaded clip bounds for {len(clip_bounds)} features from variable_ranges.csv")
+
+    build_site_a(root, output, clip_bounds=clip_bounds)
+    build_site_b(root, output, clip_bounds=clip_bounds)
+    build_site_c(root, output, clip_bounds=clip_bounds)
 
     print("\nVertical split complete.")
     print(f"Output directory: {output}")

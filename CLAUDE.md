@@ -296,13 +296,51 @@ Steps:
      - Load per-stay timeseries CSVs
      - Partition 17 features into 3 site-specific subsets (see protocol above)
      - Assign per-site task labels
+     - Clip each feature to clinical hard-limit range BEFORE ffill/bfill (see CLIP_BOUNDS
+       table below); removes data-entry artefacts (e.g. SpO2=29818%, Weight=3761721 kg)
      - Forward-fill then backward-fill missing values; mean-impute aggregated features
      - Export site_A.csv, site_B.csv, site_C.csv with patient IDs
   8. Write data_prep/psi_alignment.py:
      - Hash patient IDs with SHA-256
      - Compute intersection of patient sets across sites
-     - Return aligned patient index for training
+     - Check label balance in each split of the aligned cohort (tolerance: 3pp vs. train);
+       if imbalanced, re-assign splits using iterative stratification (Sechidis et al. 2011)
+       across all label signals: IHM (binary), LOS bins (10-class), phenotypes (25 binary)
+     - Return stratified aligned patient index for training
   9. Validate: assert class balance (AUC-compatible), temporal coverage, no feature leakage across sites
+
+### CLIP_BOUNDS — clinical hard limits for vertical_split.py
+
+Applied per-row before ffill/bfill. Bounds are taken from YerevaNN's
+`mimic3benchmark/resources/variable_ranges.csv` (VALID_LOW / VALID_HIGH columns),
+which is the canonical source for this benchmark — see Harutyunyan et al. (2019),
+Sci. Data, https://doi.org/10.1038/s41597-019-0103-9.
+
+Why clipping is still needed despite upstream cleaning: YerevaNN's `clean_events()`
+(mimic3benchmark/preprocessing.py) normalises units (°F→°C, FiO2 %→fraction, CRR
+strings→binary) but does NOT enforce hard range caps during timeseries aggregation.
+`variable_ranges.csv` bounds are read by `read_variable_ranges()` but `remove_outliers_for_variable()`
+is not called for all features. Artefacts therefore survive to the per-stay CSVs, as
+confirmed by EDA (e.g. SpO2 max = 29,818%, Weight max = 3,761,721 kg).
+
+Where our bounds differ from YerevaNN's VALID_HIGH, the reason is noted below.
+
+| Feature                   | Min  | Max  | YerevaNN VALID_HIGH | Notes                                                             |
+|---------------------------|------|------|---------------------|-------------------------------------------------------------------|
+| Heart Rate                | 0    | 300  | 350                 | HR > 300 bpm unsustainable; tighter than YerevaNN                |
+| Systolic blood pressure   | 0    | 300  | 375                 | consistent with MIMIC-III data range; tighter than YerevaNN      |
+| Diastolic blood pressure  | 0    | 200  | 375                 | EDA max = 4598 → artefact; tighter than YerevaNN                 |
+| Temperature               | 25   | 45   | 45                  | matches YerevaNN VALID_HIGH; EDA max = 285°C → artefact          |
+| Oxygen saturation         | 0    | 100  | 100                 | matches YerevaNN VALID_HIGH (% by definition); EDA max = 29,818% |
+| Respiratory rate          | 0    | 100  | 300                 | EDA max = 17,086 → artefact; tighter than YerevaNN               |
+| Glascow coma scale total  | 3    | 15   | 15                  | matches scale definition (Teasdale & Jennett, 1974, Lancet)      |
+| Glucose                   | 20   | 2000 | 2000                | matches YerevaNN VALID_HIGH; EDA max = 15,356 → unit error       |
+| pH                        | 6.5  | 8.0  | 8.4                 | physiological survival range; EDA max = 99 → artefact            |
+| Fraction inspired oxygen  | 0.21 | 1.0  | 1.0                 | matches YerevaNN VALID_HIGH; clean_fio2() converts % → fraction  |
+| Capillary refill rate     | 0    | 1    | 1                   | matches YerevaNN VALID_HIGH; clean_crr() converts to binary 0/1  |
+| Height                    | 50   | 240  | 240                 | matches YerevaNN VALID_HIGH; EDA max = 445 cm → artefact         |
+| Weight                    | 10   | 250  | 250                 | matches YerevaNN VALID_HIGH; EDA max = 3,761,721 kg → artefact   |
+| Mean blood pressure       | 0    | 300  | 330                 | EDA max = 2708 → artefact; tighter than YerevaNN                 |
 
 Deliverable: reproducible data_prep/ with documented split config and requirements.txt
 
