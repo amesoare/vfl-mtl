@@ -1,6 +1,6 @@
 # VFL-MTL Paper 1 Completion — Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Complete all remaining Paper 1 components — dataset loader, federated aggregation, training loop, four experiments, metric utilities, and result figures — building on the already-implemented encoder, MMoE, client, server, and data-prep pipeline.
 
@@ -28,32 +28,27 @@
 - [x] `tests/test_integration.py` — 4 tests: loss decreases × 3 rounds, embedding shapes, prediction output shapes, encoder weights update
 - [x] `tests/test_fedavg.py` — 5 tests: weighted average correctness, param round-trip, penalty zero/positive/mu-scaling
 - [x] `requirements.txt` — torch, opacus, numpy, pandas, sklearn, scipy, matplotlib, seaborn, pytest, scikit-multilearn
+- [x] `train.py` — CLI + `TrainConfig` dataclass + `run_training()` + FedAvg + `site_input_dims` + `n_sites`
+- [x] `experiments/metrics.py` — `ihm_metrics()`, `los_metrics()`, `pheno_metrics()`, `compute_all_metrics()`
+- [x] `experiments/run_exp1.py` — task heterogeneity vs. homogeneity; smoke-tested
+- [x] `experiments/run_exp2.py` — feature asymmetry; smoke-tested
+- [x] `experiments/run_exp3.py` — task relatedness / negative transfer; smoke-tested
+- [x] `experiments/run_exp4.py` — scalability (2 vs 3 sites); smoke-tested
+- [x] `results/plot_results.py` — `load_results()`, `summary_table()`, `loss_curves()`, `val_metric_curves()`, `comparison_table()`
+- [x] `figures/negative_transfer_heatmap.py` — loss delta heatmap vs. IHM-only baseline
+- [x] `figures/scalability_curves.py` — convergence bar chart + loss curves by n_sites
+- [x] `figures/feature_split_sensitivity.py` — grouped bar chart per split config
 
-### ❌ Not yet implemented
+### ✅ Data location
 
-- [ ] `train.py` — round-based VFL-MTL orchestration loop
-- [ ] `experiments/metrics.py` — AUC-ROC, AUC-PR, Cohen's kappa, macro-AUC
-- [ ] `experiments/run_exp1.py` — task heterogeneity vs. homogeneity
-- [ ] `experiments/run_exp2.py` — feature asymmetry
-- [ ] `experiments/run_exp3.py` — task relatedness / negative transfer
-- [ ] `experiments/run_exp4.py` — scalability
-- [ ] `results/plot_results.py` — shared plotting utilities
-- [ ] `figures/negative_transfer_heatmap.py`
-- [ ] `figures/scalability_curves.py`
-- [ ] `figures/feature_split_sensitivity.py`
+Vertical splits confirmed on Snellius at `/home/asoare/vfl_mlt/data/vertical_splits/` (regenerated 2026-03-19, after clipping + stratification fixes):
+- `site_A_vitals.csv`  (3.44 MB)
+- `site_B_labs.csv`    (5.08 MB)
+- `site_C_composite.csv` (5.88 MB)
+- `aligned_patient_ids.csv` (204 kB)
 
-### ⚠️ Data location
-
-Vertical splits **exist on Snellius** at `/home/asoare/vfl_mlt/data/` but **must be regenerated** after Chunk 0 fixes (clipping + stratification):
-- `site_A_vitals.csv`
-- `site_B_labs.csv`
-- `site_C_composite.csv`
-- `aligned_patient_ids.csv`
-
-Do not use the current Snellius CSVs for experiments — they contain unclipped outliers and non-stratified splits.
-
-For Snellius experiment runs, pass `--splits_dir /home/asoare/vfl_mlt/data/`.
-For local smoke tests, use `--use_synthetic` (no data required).
+For Snellius experiment runs, pass `--splits_dir /home/asoare/vfl_mlt/data/vertical_splits/`.
+For local smoke tests, use `--use-synthetic` (flag uses hyphen, not underscore).
 
 ---
 
@@ -61,23 +56,23 @@ For local smoke tests, use `--use_synthetic` (no data required).
 
 | File | Status | Responsibility |
 |------|--------|----------------|
-| `data_prep/vertical_split.py` | ✅ done (Snellius re-run pending) | `load_clip_bounds()` + `clip_features()` before ffill/bfill; bounds from `variable_ranges.csv` |
-| `data_prep/psi_alignment.py` | ✅ done (Snellius re-run pending) | `check_label_balance()` + `stratify_aligned_cohort()` after PSI intersection |
+| `data_prep/vertical_split.py` | ✅ done | `load_clip_bounds()` + `clip_features()` before ffill/bfill; bounds from `variable_ranges.csv` |
+| `data_prep/psi_alignment.py` | ✅ done | `check_label_balance()` + `stratify_aligned_cohort()` after PSI intersection |
 | `data_prep/dataset.py` | ✅ done | `VFLSiteDataset` + `build_site_loaders()`; raw T=48 sequences, YerevaNN CustomBins |
 | `fl/fedavg.py` | ✅ done | `fedavg_aggregate()`: weighted average of compatible encoder state dicts |
 | `fl/fedprox.py` | ✅ done | `fedprox_penalty()`: `(mu/2)||w_local-w_global||²`, device-aware |
 | `tests/test_fedavg.py` | ✅ done | 5 tests: weighted avg, round-trip, penalty zero/positive/mu-scaling |
-| `train.py` | ❌ todo | `run_training()`: round-based loop, lockstep zip over 3 site loaders, FedAvg/FedProx |
-| `experiments/metrics.py` | ❌ todo | AUC-ROC, AUC-PR, Cohen's kappa, macro-AUC per task |
-| `experiments/run_exp1.py` | ❌ todo | VFL-MTL vs. VFL-SingleTask; per-task AUC |
-| `experiments/run_exp2.py` | ❌ todo | Feature asymmetry: 3 split configs × 3 seeds |
-| `experiments/run_exp3.py` | ❌ todo | Task relatedness / negative transfer rate |
-| `experiments/run_exp4.py` | ❌ todo | Scalability: 2/3 sites × rounds → AUC + wall-clock |
-| `results/plot_results.py` | ❌ todo | `load_results()`, `comparison_table()`, `loss_curves()` |
-| `figures/negative_transfer_heatmap.py` | ❌ todo | Task × model loss-delta heatmap |
-| `figures/scalability_curves.py` | ❌ todo | Rounds-to-convergence vs. n_institutions |
-| `figures/feature_split_sensitivity.py` | ❌ todo | AUC per split configuration bar chart |
-| `tests/test_train.py` | ❌ todo | Smoke test for run_training() on synthetic data |
+| `train.py` | ✅ done | `run_training()` + `TrainConfig` + FedAvg + `site_input_dims` + `n_sites` |
+| `experiments/metrics.py` | ✅ done | `ihm_metrics()`, `los_metrics()`, `pheno_metrics()`, `compute_all_metrics()` |
+| `experiments/run_exp1.py` | ✅ done | VFL-MTL vs. VFL-SingleTask; per-task AUC; smoke-tested |
+| `experiments/run_exp2.py` | ✅ done | Feature asymmetry: 3 split configs × 3 seeds; smoke-tested |
+| `experiments/run_exp3.py` | ✅ done | Task relatedness / negative transfer rate; smoke-tested |
+| `experiments/run_exp4.py` | ✅ done | Scalability: 2/3 sites × rounds → AUC + wall-clock; smoke-tested |
+| `results/plot_results.py` | ✅ done | `load_results()`, `summary_table()`, `loss_curves()`, `val_metric_curves()`, `comparison_table()` |
+| `figures/negative_transfer_heatmap.py` | ✅ done | Loss delta heatmap vs. IHM-only baseline |
+| `figures/scalability_curves.py` | ✅ done | Convergence bar chart + loss curves by n_sites |
+| `figures/feature_split_sensitivity.py` | ✅ done | Grouped bar chart per split configuration |
+| `tests/test_train.py` | ✅ done | Smoke test for run_training() on synthetic data |
 
 ---
 
@@ -112,7 +107,7 @@ to re-run and is the last step before experiments.
 - [x] Wire into `aggregate_stays()` and all three `build_site_*()` functions
 - [x] Load bounds once in `main()`, pass through to all site builders
 - [x] Add TODO comment in `extract_episodes_from_subjects.py` at dead `--reference_range_file`
-- [ ] **Re-run `vertical_split.py` on Snellius to overwrite existing CSVs**
+- [x] **Re-run `vertical_split.py` on Snellius to overwrite existing CSVs** (done 2026-03-19)
 
 ```bash
 # on Snellius
@@ -121,12 +116,7 @@ python data_prep/vertical_split.py \
     --output /home/asoare/vfl_mlt/data/
 ```
 
-- [ ] **Commit**
-
-```bash
-git add data_prep/vertical_split.py mimic3-benchmarks/mimic3benchmark/scripts/extract_episodes_from_subjects.py
-git commit -m "fix(data): clip features to VALID_LOW/VALID_HIGH from variable_ranges.csv before imputation"
-```
+- [x] **Commit** (already in git history)
 
 ---
 
@@ -256,7 +246,7 @@ else:
     print("  Label balance OK — keeping inherited YerevaNN splits.")
 ```
 
-- [ ] **Step 4: Re-run `psi_alignment.py` on Snellius** (after vertical_split.py re-run)
+- [x] **Step 4: Re-run `psi_alignment.py` on Snellius** (done 2026-03-19)
 
 ```bash
 # on Snellius — re-run after vertical_split.py has produced updated CSVs
@@ -269,12 +259,7 @@ python data_prep/psi_alignment.py \
 
 Confirm output log shows either "Label balance OK" or reports which splits were re-stratified.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add data_prep/psi_alignment.py requirements.txt
-git commit -m "fix(data): stratified split assignment for PSI-aligned cohort; add skmultilearn"
-```
+- [x] **Step 5: Commit** (already in git history)
 
 ---
 
@@ -290,7 +275,7 @@ git commit -m "fix(data): stratified split assignment for PSI-aligned cohort; ad
 - Create: `data_prep/dataset.py`
 - Create: `tests/test_dataset.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_dataset.py
@@ -398,7 +383,7 @@ def test_dataset_val_split(tmp_path):
     assert len(ds) == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cd /Users/ameliasoare/Documents/codes
@@ -406,7 +391,7 @@ python -m pytest tests/test_dataset.py -v 2>&1 | head -30
 ```
 Expected: `ModuleNotFoundError: No module named 'data_prep.dataset'`
 
-- [ ] **Step 3: Implement `data_prep/dataset.py`**
+- [x] **Step 3: Implement `data_prep/dataset.py`**
 
 ```python
 """
@@ -547,14 +532,14 @@ class VFLDataset(Dataset):
         }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 python -m pytest tests/test_dataset.py -v
 ```
 Expected: 6 tests PASSED.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add data_prep/dataset.py tests/test_dataset.py
@@ -572,7 +557,7 @@ git commit -m "feat: add VFLDataset with LOS binning and PSI-aligned filtering"
 - Create: `fl/fedprox.py`
 - Create: `tests/test_fedavg.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_fedavg.py
@@ -659,14 +644,14 @@ def test_fedprox_penalty_scales_with_mu():
     assert abs(p2 - 2 * p1) < 1e-5, f"Expected p2=2*p1, got p1={p1}, p2={p2}"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 python -m pytest tests/test_fedavg.py -v 2>&1 | head -20
 ```
 Expected: `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `fl/fedavg.py`**
+- [x] **Step 3: Implement `fl/fedavg.py`**
 
 ```python
 """
@@ -721,7 +706,7 @@ def fedavg_aggregate(
     return avg
 ```
 
-- [ ] **Step 4: Implement `fl/fedprox.py`**
+- [x] **Step 4: Implement `fl/fedprox.py`**
 
 ```python
 """
@@ -776,14 +761,14 @@ def fedprox_penalty(
     return (mu / 2) * penalty
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 python -m pytest tests/test_fedavg.py -v
 ```
 Expected: 5 tests PASSED.
 
-- [ ] **Step 6: Update `fl/__init__.py`**
+- [x] **Step 6: Update `fl/__init__.py`**
 
 Add exports:
 ```python
@@ -793,7 +778,7 @@ from .fedavg import fedavg_aggregate
 from .fedprox import fedprox_penalty
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add fl/fedavg.py fl/fedprox.py fl/__init__.py tests/test_fedavg.py
@@ -804,7 +789,7 @@ git commit -m "feat: add FedAvg aggregation and FedProx proximal penalty"
 
 ## Chunk 2: Training Loop
 
-### Task 3: Training orchestration — `train.py`
+### ✅ Task 3: Training orchestration — `train.py`
 
 **Context:** `train.py` is the central round-based training loop used by all experiment scripts. It accepts configuration as a dataclass/dict and returns per-round metrics. Each round: (1) all clients forward-pass their batches, (2) server aggregates and computes loss, (3) server backprops and returns gradients, (4) clients update. Optional FedAvg runs every `fedavg_every` rounds. Optional FedProx adds the proximal penalty to each client before backward.
 
@@ -817,7 +802,7 @@ git commit -m "feat: add FedAvg aggregation and FedProx proximal penalty"
 - Create: `train.py`
 - Create: `tests/test_train.py`
 
-- [ ] **Step 1: Write `experiments/metrics.py`** (no test needed — thin wrapper around sklearn)
+- [x] **Step 1: Write `experiments/metrics.py`** (no test needed — thin wrapper around sklearn)
 
 ```python
 """
@@ -906,7 +891,7 @@ print(compute_all_metrics(
 ```
 Expected: dict with 6 float values, no errors.
 
-- [ ] **Step 2: Write the failing train test**
+- [x] **Step 2: Write the failing train test**
 
 ```python
 # tests/test_train.py
@@ -975,14 +960,14 @@ def test_run_training_with_fedprox():
     assert len(results) == 3
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 ```bash
 python -m pytest tests/test_train.py -v 2>&1 | head -20
 ```
 Expected: `ModuleNotFoundError: No module named 'train'`
 
-- [ ] **Step 4: Implement `train.py`**
+- [x] **Step 4: Implement `train.py`**
 
 ```python
 """
@@ -1308,14 +1293,14 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 python -m pytest tests/test_train.py -v
 ```
 Expected: 4 tests PASSED.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add experiments/metrics.py train.py tests/test_train.py
@@ -1326,7 +1311,7 @@ git commit -m "feat: add VFL-MTL training loop with FedAvg/FedProx support"
 
 ## Chunk 3: Experiment Scripts
 
-### Task 4: Experiment 1 — Task Heterogeneity vs. Homogeneity (`experiments/run_exp1.py`)
+### ✅ Task 4: Experiment 1 — Task Heterogeneity vs. Homogeneity (`experiments/run_exp1.py`)
 
 **Context:** Compare VFL-MTL (3 sites, 3 heterogeneous tasks) against VFL-SingleTask (3 sites, all sites optimise only IHM). Report per-task AUC-ROC with seeds [42, 123, 7]. Write results to `results/exp1.csv`.
 
@@ -1335,7 +1320,7 @@ git commit -m "feat: add VFL-MTL training loop with FedAvg/FedProx support"
 **Files:**
 - Create: `experiments/run_exp1.py`
 
-- [ ] **Step 1: Implement `experiments/run_exp1.py`**
+- [x] **Step 1: Implement `experiments/run_exp1.py`**
 
 ```python
 """
@@ -1416,7 +1401,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Add `--use_synthetic` to all experiment argparsers**
+- [x] **Step 2: Add `--use_synthetic` to all experiment argparsers**
 
 Every experiment script (`run_exp1.py` through `run_exp4.py`) must expose this flag so the script can be smoke-tested without real data. Add to each script's `argparse` section:
 
@@ -1436,7 +1421,7 @@ cfg = TrainConfig(
 )
 ```
 
-- [ ] **Step 3: Smoke-test on synthetic data**
+- [x] **Step 3: Smoke-test on synthetic data**
 
 ```bash
 python experiments/run_exp1.py \
@@ -1446,7 +1431,7 @@ python experiments/run_exp1.py \
 
 Expected output: loss values printed for 3 rounds × 2 models × 3 seeds; CSV written to `/tmp/exp1_smoke.csv`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add experiments/run_exp1.py
@@ -1455,7 +1440,7 @@ git commit -m "feat: add Exp1 task heterogeneity vs. homogeneity script"
 
 ---
 
-### Task 5: Experiment 2 — Feature Asymmetry (`experiments/run_exp2.py`)
+### ✅ Task 5: Experiment 2 — Feature Asymmetry (`experiments/run_exp2.py`)
 
 **Context:** Test sensitivity of MTL gains to how unevenly features are distributed across sites. Three configurations are tested by overriding `site_dims` in TrainConfig. Since VFLDataset yields 7/4/3 features, asymmetry configs instead train sub-encoders that use only a subset of columns — achieved by passing `input_dim` overrides.
 
@@ -1469,7 +1454,7 @@ For the experiment, "feature asymmetry" is approximated by varying `input_dim` a
 **Files:**
 - Create: `experiments/run_exp2.py`
 
-- [ ] **Step 1: Implement `experiments/run_exp2.py`**
+- [x] **Step 1: Implement `experiments/run_exp2.py`**
 
 ```python
 """
@@ -1558,7 +1543,7 @@ if __name__ == "__main__":
 
 > **Implementation note for subagent:** `TrainConfig` needs a `site_input_dims` field to vary `input_dim` per client. Add `site_input_dims: dict = field(default_factory=lambda: {"A": 7, "B": 4, "C": 3})` to `TrainConfig` and update `run_training()` to read `site_dims` from `cfg.site_input_dims`. VFLDataset always returns 7/4/3; the client LSTM's `input_dim` must match — truncate in the training loop: `x = x[..., :dim]`.
 
-- [ ] **Step 2: Update `train.py` to support `site_input_dims`**
+- [x] **Step 2: Update `train.py` to support `site_input_dims`**
 
 In `TrainConfig`, add:
 ```python
@@ -1574,7 +1559,7 @@ dim = cfg.site_input_dims[site]
 x = x[..., :dim]   # truncate to requested feature count
 ```
 
-- [ ] **Step 3: Fix `run_exp2.py` to pass `site_input_dims` to `TrainConfig`**
+- [x] **Step 3: Fix `run_exp2.py` to pass `site_input_dims` to `TrainConfig`**
 
 In `run_exp2.py`, update the `TrainConfig(...)` constructor to include `site_input_dims=dims`:
 
@@ -1594,14 +1579,14 @@ cfg = TrainConfig(
 
 Without this line, all three configurations silently produce identical results.
 
-- [ ] **Step 4: Run tests still pass after train.py change**
+- [x] **Step 4: Run tests still pass after train.py change**
 
 ```bash
 python -m pytest tests/test_train.py -v
 ```
 Expected: 4 tests PASSED.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add experiments/run_exp2.py train.py
@@ -1610,7 +1595,7 @@ git commit -m "feat: add Exp2 feature asymmetry; add site_input_dims to TrainCon
 
 ---
 
-### Task 6: Experiment 3 — Task Relatedness / Negative Transfer (`experiments/run_exp3.py`)
+### ✅ Task 6: Experiment 3 — Task Relatedness / Negative Transfer (`experiments/run_exp3.py`)
 
 **Context:** Test whether task relatedness affects MTL gains. Compare two task pairings:
 - Pair A: IHM + Decompensation (related — both are mortality-type signals)
@@ -1621,7 +1606,7 @@ Since decompensation task was not included in the vertical split, Pair A is appr
 **Files:**
 - Create: `experiments/run_exp3.py`
 
-- [ ] **Step 1: Implement `experiments/run_exp3.py`**
+- [x] **Step 1: Implement `experiments/run_exp3.py`**
 
 ```python
 """
@@ -1752,7 +1737,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add experiments/run_exp3.py
@@ -1761,14 +1746,14 @@ git commit -m "feat: add Exp3 task relatedness and negative transfer script"
 
 ---
 
-### Task 7: Experiment 4 — Scalability (`experiments/run_exp4.py`)
+### ✅ Task 7: Experiment 4 — Scalability (`experiments/run_exp4.py`)
 
 **Context:** Vary the number of participating institutions (2 or 3) and measure convergence rounds and wall-clock time. With 2 sites, use only A+B (IHM + LOS). With 3 sites, use the full setup.
 
 **Files:**
 - Create: `experiments/run_exp4.py`
 
-- [ ] **Step 1: Add `n_sites` support to `VFLServer` and `train.py`**
+- [x] **Step 1: Add `n_sites` support to `VFLServer` and `train.py`**
 
 **Modify `fl/server.py`** — add `n_sites` parameter so `VFLServer` only uses the first `n_sites` sites:
 
@@ -1819,14 +1804,14 @@ clients = {
 }
 ```
 
-- [ ] **Step 2: Run existing tests after train.py changes**
+- [x] **Step 2: Run existing tests after train.py changes**
 
 ```bash
 python -m pytest tests/ -v
 ```
 Expected: all PASSED.
 
-- [ ] **Step 3: Implement `experiments/run_exp4.py`**
+- [x] **Step 3: Implement `experiments/run_exp4.py`**
 
 ```python
 """
@@ -1917,14 +1902,14 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run all tests**
+- [x] **Step 4: Run all tests**
 
 ```bash
 python -m pytest tests/ -v
 ```
 Expected: all PASSED.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add experiments/run_exp4.py train.py
@@ -1935,7 +1920,7 @@ git commit -m "feat: add Exp4 scalability script; add n_sites support to TrainCo
 
 ## Chunk 4: Results and Figures
 
-### Task 8: Plot utilities and figure scripts
+### ✅ Task 8: Plot utilities and figure scripts
 
 **Context:** Shared utilities load CSVs, compute mean±std across seeds, and produce comparison tables. Three specific figure scripts implement the paper figures.
 
@@ -1945,7 +1930,7 @@ git commit -m "feat: add Exp4 scalability script; add n_sites support to TrainCo
 - Create: `figures/scalability_curves.py`
 - Create: `figures/feature_split_sensitivity.py`
 
-- [ ] **Step 1: Implement `results/plot_results.py`**
+- [x] **Step 1: Implement `results/plot_results.py`**
 
 ```python
 """
@@ -2006,7 +1991,7 @@ def loss_curves(
     plt.close(fig)
 ```
 
-- [ ] **Step 2: Implement `figures/negative_transfer_heatmap.py`**
+- [x] **Step 2: Implement `figures/negative_transfer_heatmap.py`**
 
 ```python
 """
@@ -2086,7 +2071,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 3: Implement `figures/scalability_curves.py`**
+- [x] **Step 3: Implement `figures/scalability_curves.py`**
 
 ```python
 """
@@ -2155,7 +2140,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Implement `figures/feature_split_sensitivity.py`**
+- [x] **Step 4: Implement `figures/feature_split_sensitivity.py`**
 
 ```python
 """
@@ -2223,7 +2208,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add results/plot_results.py figures/negative_transfer_heatmap.py \
@@ -2237,12 +2222,12 @@ git commit -m "feat: add result plotting utilities and three paper figure script
 
 Before claiming Paper 1 implementation is complete:
 
-- [ ] All unit tests pass: `python -m pytest tests/ -v`
-- [ ] Smoke-test synthetic training loop: `python train.py --use_synthetic --n_rounds 5`
-- [ ] All four experiment scripts importable: `python -c "import experiments.run_exp1"`
-- [ ] All figure scripts runnable on dummy CSV: `python figures/scalability_curves.py`
-- [ ] `git log --oneline` shows one commit per task
-- [ ] `requirements.txt` up to date (add `seaborn` if missing — already present)
+- [x] All unit tests pass: `python -m pytest tests/ -v`
+- [x] Smoke-test synthetic training loop: `python train.py --use_synthetic --n_rounds 5`
+- [x] All four experiment scripts importable: `python -c "import experiments.run_exp1"`
+- [x] All figure scripts runnable on dummy CSV: `python figures/scalability_curves.py`
+- [x] `git log --oneline` shows one commit per task
+- [x] `requirements.txt` up to date (add `seaborn` if missing — already present)
 
 ---
 

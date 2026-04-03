@@ -11,3 +11,4 @@ build/
 data/
 slurm-*.out
 slurm-*.err
+mimic3-benchmarks/

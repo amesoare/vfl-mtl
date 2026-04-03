@@ -389,6 +389,7 @@ def build_site_loaders(
             shuffle     = (split == "train"),
             collate_fn  = collate_fn,
             num_workers = num_workers,
+            drop_last   = True,  # ensures all sites produce equal-sized batches for lockstep zip
         )
 
     return loaders

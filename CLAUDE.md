@@ -269,7 +269,10 @@ original protocol are absent from the benchmark entirely (STATUS="verify", never
 
 1. Local-only (each site, single task, own features only)
 2. Centralised oracle (all features + all tasks pooled — upper bound)
-3. VFL-SingleTask (VFL with one shared task — MTL contribution ablation)
+3. VFL-SingleTask: three per-site single-task baselines (ST-IHM, ST-LOS, ST-Pheno),
+   each trained on its own site's task only — MTL contribution ablation.
+   VFL with one shared task across all sites (e.g. IHM everywhere) is a separate
+   variant not used in Exp 1, as it conflates task heterogeneity with MTL contribution.
 4. MOCHA (Smith et al., 2017) — HFL-MTL, same-task assumption
 5. FMTLJD (Huang et al., 2023) — HFL-MTL, psychiatric benchmark
 6. MARS-VFL methods — single-task VFL reference
@@ -385,8 +388,15 @@ Goals:
 
 Experiments:
   Exp 1 — Task heterogeneity vs. homogeneity:
-    - Compare VFL-MTL vs. VFL-SingleTask per site
+    - Compare VFL-MTL vs. three per-site single-task baselines:
+        ST-IHM   (Site A, IHM only  — ihm:1 los:0 pheno:0)
+        ST-LOS   (Site B, LOS only  — ihm:0 los:1 pheno:0)
+        ST-Pheno (Site C, Pheno only— ihm:0 los:0 pheno:1)
+    - MTL gain per task = VFL-MTL metric − ST-{task} metric for the same task
     - Metrics: per-task AUC-ROC, AUC-PR, Cohen's kappa (LOS), macro-AUC (phenotyping)
+    - Note: VFL-SingleTask (shared IHM across all sites) was replaced by these three
+      per-site baselines. Shared-task VFL is covered separately as baseline 3 in the
+      baselines list; mixing it into Exp 1 conflated two distinct ablations.
 
   Exp 2 — Feature asymmetry:
     - Split sizes: 5/6/6 vs. 3/7/7 vs. 7/6/4 features per site

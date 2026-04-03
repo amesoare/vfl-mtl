@@ -48,12 +48,14 @@ class VFLServer:
         lr: float = 1e-3,
         device: torch.device | str = "cpu",
         task_weights: dict[str, float] | None = None,
+        n_sites: int = 3,
     ):
         self.device    = torch.device(device)
         self.embed_dim = embed_dim
+        self.SITES     = self.__class__.SITES[:n_sites]
 
         self.model = MMoEServer(
-            input_dim=len(self.SITES) * embed_dim,
+            input_dim=n_sites * embed_dim,
             num_experts=num_experts,
             expert_hidden=expert_hidden,
             expert_out=embed_dim,
