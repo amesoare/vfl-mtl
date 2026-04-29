@@ -31,7 +31,7 @@ EMBED_DIM = 64
 
 SITE_CONFIGS = {
     "A": {"input_dim": 7,  "task": "binary"},
-    "B": {"input_dim": 4,  "task": "los_bins"},
+    "B": {"input_dim": 4,  "task": "binary"},
     "C": {"input_dim": 3,  "task": "multilabel"},
 }
 
@@ -46,8 +46,6 @@ def make_batch(input_dim: int, task: str, B: int = BATCH_SIZE):
 
     if task == "binary":
         y = torch.randint(0, 2, (B,)).float()
-    elif task == "los_bins":
-        y = torch.randint(0, 10, (B,)).long()
     else:  # multilabel
         y = torch.randint(0, 2, (B, 25)).float()
 
@@ -86,9 +84,9 @@ def test_3_round_loss_decreases():
         # Step 2 — server concatenates embeddings and computes loss
         server.aggregate_embeddings(cut_embeddings)
         labels = {
-            "ihm":   batches["A"][2],
-            "los":   batches["B"][2],
-            "pheno": batches["C"][2],
+            "ihm":    batches["A"][2],
+            "decomp": batches["B"][2],
+            "pheno":  batches["C"][2],
         }
         total_loss, task_losses = server.forward_and_loss(labels)
         round_losses.append(total_loss.item())
@@ -103,7 +101,7 @@ def test_3_round_loss_decreases():
 
         print(f"  Round {round_idx + 1}: total_loss={total_loss.item():.4f} "
               f"| ihm={task_losses['ihm'].item():.4f} "
-              f"| los={task_losses['los'].item():.4f} "
+              f"| decomp={task_losses['decomp'].item():.4f} "
               f"| pheno={task_losses['pheno'].item():.4f}")
 
     assert round_losses[2] < round_losses[0], (
@@ -137,9 +135,9 @@ def test_embedding_shapes():
         f"concat embedding shape wrong: {concat.shape}"
 
     labels = {
-        "ihm":   make_batch(7,  "binary")[2],
-        "los":   make_batch(4,  "los_bins")[2],
-        "pheno": make_batch(3,  "multilabel")[2],
+        "ihm":    make_batch(7, "binary")[2],
+        "decomp": make_batch(4, "binary")[2],
+        "pheno":  make_batch(3, "multilabel")[2],
     }
     total_loss, _ = server.forward_and_loss(labels)
     server.backward_and_step(total_loss)
@@ -166,9 +164,9 @@ def test_prediction_output_shapes():
 
     preds = server.predict(embeddings)
 
-    assert preds["ihm"].shape   == (BATCH_SIZE, 1),  f"IHM shape: {preds['ihm'].shape}"
-    assert preds["los"].shape   == (BATCH_SIZE, 10), f"LOS shape: {preds['los'].shape}"
-    assert preds["pheno"].shape == (BATCH_SIZE, 25), f"Pheno shape: {preds['pheno'].shape}"
+    assert preds["ihm"].shape    == (BATCH_SIZE, 1),  f"IHM shape: {preds['ihm'].shape}"
+    assert preds["decomp"].shape == (BATCH_SIZE, 1),  f"Decomp shape: {preds['decomp'].shape}"
+    assert preds["pheno"].shape  == (BATCH_SIZE, 25), f"Pheno shape: {preds['pheno'].shape}"
 
 
 def test_encoder_weights_update_after_gradient():
@@ -183,7 +181,7 @@ def test_encoder_weights_update_after_gradient():
     before = {k: v.clone() for k, v in client.encoder.state_dict().items()}
 
     x_A, mask_A, y_A = make_batch(7, "binary")
-    x_B, mask_B, y_B = make_batch(4, "los_bins")
+    x_B, mask_B, y_B = make_batch(4, "binary")
     x_C, mask_C, y_C = make_batch(3, "multilabel")
 
     emb_A = client.forward(x_A, mask_A)
@@ -191,7 +189,7 @@ def test_encoder_weights_update_after_gradient():
     emb_C = clients_C.forward(x_C, mask_C)
 
     server.aggregate_embeddings({"A": emb_A, "B": emb_B, "C": emb_C})
-    loss, _ = server.forward_and_loss({"ihm": y_A, "los": y_B, "pheno": y_C})
+    loss, _ = server.forward_and_loss({"ihm": y_A, "decomp": y_B, "pheno": y_C})
     server.backward_and_step(loss)
     grads = server.get_embedding_gradients()
     client.receive_gradient(grads["A"])
@@ -201,6 +199,109 @@ def test_encoder_weights_update_after_gradient():
         not torch.equal(before[k], after[k]) for k in before
     )
     assert changed, "Encoder weights did not change after receive_gradient()"
+
+
+def test_grad_sim_values_in_range():
+    """compute_task_gradient_similarity must return cosine values in [-1, 1] for active tasks."""
+    torch.manual_seed(5)
+    clients = {s: VFLClient(input_dim=cfg["input_dim"]) for s, cfg in SITE_CONFIGS.items()}
+    server = VFLServer()
+
+    embeddings = {}
+    for site, cfg in SITE_CONFIGS.items():
+        x, mask, _ = make_batch(cfg["input_dim"], cfg["task"])
+        embeddings[site] = clients[site].forward(x, mask)
+
+    labels = {
+        "ihm":    make_batch(7, "binary")[2],
+        "decomp": make_batch(4, "binary")[2],
+        "pheno":  make_batch(3, "multilabel")[2],
+    }
+    server.aggregate_embeddings(embeddings)
+    total_loss, _ = server.forward_and_loss(labels)
+    server.backward_and_step(total_loss)
+
+    sims = server.compute_task_gradient_similarity(labels)
+
+    expected_keys = {"grad_sim_ihm_decomp", "grad_sim_ihm_pheno", "grad_sim_decomp_pheno"}
+    assert set(sims.keys()) == expected_keys, f"Unexpected keys: {sims.keys()}"
+
+    for key, val in sims.items():
+        assert not (val != val), f"{key} is NaN (all tasks active — should not be NaN)"
+        assert -1.0 <= val <= 1.0, f"{key}={val:.4f} outside [-1, 1]"
+
+
+def test_grad_sim_inactive_task_gives_nan():
+    """Gradient similarity involving a zero-weight task must be NaN."""
+    torch.manual_seed(6)
+    # pheno weight = 0 → ihm_vs_pheno and decomp_vs_pheno must be NaN
+    clients = {s: VFLClient(input_dim=cfg["input_dim"]) for s, cfg in SITE_CONFIGS.items()}
+    server = VFLServer(task_weights={"ihm": 1.0, "decomp": 1.0, "pheno": 0.0})
+
+    embeddings = {}
+    for site, cfg in SITE_CONFIGS.items():
+        x, mask, _ = make_batch(cfg["input_dim"], cfg["task"])
+        embeddings[site] = clients[site].forward(x, mask)
+
+    labels = {
+        "ihm":    make_batch(7, "binary")[2],
+        "decomp": make_batch(4, "binary")[2],
+        "pheno":  make_batch(3, "multilabel")[2],
+    }
+    server.aggregate_embeddings(embeddings)
+    total_loss, _ = server.forward_and_loss(labels)
+    server.backward_and_step(total_loss)
+
+    sims = server.compute_task_gradient_similarity(labels)
+
+    import math
+    assert math.isnan(sims["grad_sim_ihm_pheno"]),    "ihm_vs_pheno should be NaN when pheno weight=0"
+    assert math.isnan(sims["grad_sim_decomp_pheno"]), "decomp_vs_pheno should be NaN when pheno weight=0"
+
+    # ihm_vs_decomp: both active, must be a real number in [-1, 1]
+    assert not math.isnan(sims["grad_sim_ihm_decomp"]), "ihm_vs_decomp should not be NaN"
+    assert -1.0 <= sims["grad_sim_ihm_decomp"] <= 1.0
+
+
+def test_grad_sim_does_not_corrupt_embedding_gradients():
+    """
+    Calling compute_task_gradient_similarity between backward_and_step and
+    get_embedding_gradients must not zero or overwrite the embedding gradients
+    that get_embedding_gradients relies on.
+    """
+    torch.manual_seed(7)
+    clients = {s: VFLClient(input_dim=cfg["input_dim"]) for s, cfg in SITE_CONFIGS.items()}
+    server = VFLServer()
+
+    embeddings = {}
+    for site, cfg in SITE_CONFIGS.items():
+        x, mask, _ = make_batch(cfg["input_dim"], cfg["task"])
+        embeddings[site] = clients[site].forward(x, mask)
+
+    labels = {
+        "ihm":    make_batch(7, "binary")[2],
+        "decomp": make_batch(4, "binary")[2],
+        "pheno":  make_batch(3, "multilabel")[2],
+    }
+    server.aggregate_embeddings(embeddings)
+    total_loss, _ = server.forward_and_loss(labels)
+    server.backward_and_step(total_loss)
+
+    # Capture gradients BEFORE calling compute_task_gradient_similarity
+    grads_before = server.get_embedding_gradients()
+    grad_norm_before = {s: grads_before[s].norm().item() for s in ("A", "B", "C")}
+
+    # Call the method — must not alter _concat_embedding.grad
+    server.compute_task_gradient_similarity(labels)
+
+    grads_after = server.get_embedding_gradients()
+    grad_norm_after = {s: grads_after[s].norm().item() for s in ("A", "B", "C")}
+
+    for site in ("A", "B", "C"):
+        assert abs(grad_norm_before[site] - grad_norm_after[site]) < 1e-6, (
+            f"Site {site} embedding gradient norm changed after compute_task_gradient_similarity: "
+            f"before={grad_norm_before[site]:.6f}, after={grad_norm_after[site]:.6f}"
+        )
 
 
 if __name__ == "__main__":
@@ -219,6 +320,18 @@ if __name__ == "__main__":
 
     print("\n[4/4] test_3_round_loss_decreases")
     test_3_round_loss_decreases()
+    print("  PASSED")
+
+    print("\n[5/7] test_grad_sim_values_in_range")
+    test_grad_sim_values_in_range()
+    print("  PASSED")
+
+    print("\n[6/7] test_grad_sim_inactive_task_gives_nan")
+    test_grad_sim_inactive_task_gives_nan()
+    print("  PASSED")
+
+    print("\n[7/7] test_grad_sim_does_not_corrupt_embedding_gradients")
+    test_grad_sim_does_not_corrupt_embedding_gradients()
     print("  PASSED")
 
     print("\nAll integration tests passed.")

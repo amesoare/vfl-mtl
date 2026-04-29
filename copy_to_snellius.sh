@@ -31,6 +31,7 @@ SSHPASS="$SNELLIUS_PASSWORD" sshpass -e rsync -avz --progress \
     --exclude='.env' \
     --exclude='slurm-*.out' \
     --exclude='slurm-*.err' \
+    --exclude='checkpoints/' \
     "$SCRIPT_DIR/" \
     "$REMOTE:$REMOTE_DIR/"
 

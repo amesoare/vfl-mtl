@@ -15,8 +15,8 @@ MMoELayer:
   Output: 3 task-specific vectors, each (B, expert_out_dim=64)
 
 Task heads:
-  IHM (Site A)   → binary      : Linear(64, 1)  + Sigmoid
-  LOS (Site B)   → 10-bin cls  : Linear(64, 10)          [logits, CrossEntropyLoss]
+  IHM   (Site A) → binary      : Linear(64, 1)  + Sigmoid
+  Decomp (Site B) → binary     : Linear(64, 1)  + Sigmoid
   Pheno (Site C) → multi-label : Linear(64, 25) + Sigmoid
 
 MMoEServer:
@@ -61,11 +61,13 @@ class MMoELayer(nn.Module):
 
     Parameters
     ----------
-    input_dim    : dimension of the concatenated embedding (3 × 64 = 192)
-    num_experts  : number of shared expert MLPs (default 4, per CLAUDE.md)
-    expert_hidden: hidden size inside each expert MLP
-    expert_out   : output size of each expert (= embed_dim fed to task heads)
-    num_tasks    : number of prediction tasks (3: IHM, LOS, Pheno)
+    input_dim      : dimension of the concatenated embedding (3 × 64 = 192)
+    num_experts    : number of shared expert MLPs (default 4, per CLAUDE.md)
+    expert_hidden  : hidden size inside each expert MLP
+    expert_out     : output size of each expert (= embed_dim fed to task heads)
+    num_tasks      : number of prediction tasks (3: IHM, Decomp, Pheno)
+    uniform_gating : if True, replace learned softmax gating with fixed equal
+                     weights (1/num_experts per expert). Ablation 4.
     """
 
     def __init__(
@@ -75,16 +77,18 @@ class MMoELayer(nn.Module):
         expert_hidden: int = 128,
         expert_out: int = 64,
         num_tasks: int = 3,
+        uniform_gating: bool = False,
     ):
         super().__init__()
-        self.num_experts = num_experts
-        self.num_tasks   = num_tasks
+        self.num_experts    = num_experts
+        self.num_tasks      = num_tasks
+        self.uniform_gating = uniform_gating
 
         self.experts = nn.ModuleList([
             ExpertMLP(input_dim, expert_hidden, expert_out)
             for _ in range(num_experts)
         ])
-        # One softmax gating network per task
+        # One softmax gating network per task (unused when uniform_gating=True)
         self.gates = nn.ModuleList([
             nn.Linear(input_dim, num_experts, bias=False)
             for _ in range(num_tasks)
@@ -100,15 +104,21 @@ class MMoELayer(nn.Module):
         -------
         list of num_tasks tensors, each (B, expert_out)
         """
-        # Compute all expert outputs: list of num_experts tensors (B, expert_out)
         expert_outs = torch.stack(
             [expert(x) for expert in self.experts], dim=1
         )  # (B, num_experts, expert_out)
 
         task_outputs = []
         for gate in self.gates:
-            weights = torch.softmax(gate(x), dim=-1)   # (B, num_experts)
-            # Weighted sum of expert outputs
+            if self.uniform_gating:
+                # Ablation 4: fixed equal weights — no learned routing
+                weights = torch.full(
+                    (x.size(0), self.num_experts),
+                    1.0 / self.num_experts,
+                    device=x.device,
+                )
+            else:
+                weights = torch.softmax(gate(x), dim=-1)  # (B, num_experts)
             out = (weights.unsqueeze(-1) * expert_outs).sum(dim=1)  # (B, expert_out)
             task_outputs.append(out)
 
@@ -157,14 +167,17 @@ class MMoEServer(nn.Module):
 
     Parameters
     ----------
-    input_dim    : size of concatenated embedding (default 192 = 3 × 64)
-    num_experts  : shared expert count (default 4)
-    expert_hidden: expert MLP hidden size (default 128)
-    expert_out   : expert output / task head input size (default 64)
+    input_dim      : size of concatenated embedding (default 192 = 3 × 64)
+    num_experts    : shared expert count (default 4)
+    expert_hidden  : expert MLP hidden size (default 128)
+    expert_out     : expert output / task head input size (default 64)
+    use_mmoe       : if False, replace MMoE with a shared-bottom MLP (Abl 1)
+    uniform_gating : if True, use fixed equal expert weights instead of learned
+                     softmax gating (Abl 4); ignored when use_mmoe=False
     """
 
     # Task order is fixed; names are used as dict keys throughout the codebase.
-    TASK_ORDER = ("ihm", "los", "pheno")
+    TASK_ORDER = ("ihm", "decomp", "pheno")
 
     def __init__(
         self,
@@ -172,21 +185,34 @@ class MMoEServer(nn.Module):
         num_experts: int = 4,
         expert_hidden: int = 128,
         expert_out: int = 64,
+        use_mmoe: bool = True,
+        uniform_gating: bool = False,
     ):
         super().__init__()
+        self.use_mmoe = use_mmoe
 
-        self.mmoe = MMoELayer(
-            input_dim=input_dim,
-            num_experts=num_experts,
-            expert_hidden=expert_hidden,
-            expert_out=expert_out,
-            num_tasks=len(self.TASK_ORDER),
-        )
+        if use_mmoe:
+            self.mmoe = MMoELayer(
+                input_dim=input_dim,
+                num_experts=num_experts,
+                expert_hidden=expert_hidden,
+                expert_out=expert_out,
+                num_tasks=len(self.TASK_ORDER),
+                uniform_gating=uniform_gating,
+            )
+        else:
+            # Ablation 1: single shared-bottom MLP, no gating
+            self.shared_bottom = nn.Sequential(
+                nn.Linear(input_dim, expert_hidden),
+                nn.ReLU(),
+                nn.Linear(expert_hidden, expert_out),
+                nn.ReLU(),
+            )
 
         self.heads = nn.ModuleDict({
-            "ihm":   TaskHead(expert_out, "binary"),
-            "los":   TaskHead(expert_out, "los_bins",   n_classes=10),
-            "pheno": TaskHead(expert_out, "multilabel", n_classes=25),
+            "ihm":    TaskHead(expert_out, "binary"),
+            "decomp": TaskHead(expert_out, "binary"),
+            "pheno":  TaskHead(expert_out, "multilabel", n_classes=25),
         })
 
     def forward(self, concat_embedding: Tensor) -> dict[str, Tensor]:
@@ -197,12 +223,16 @@ class MMoEServer(nn.Module):
 
         Returns
         -------
-        dict with keys 'ihm', 'los', 'pheno' and tensor values:
-          'ihm'  : (B, 1)   float32  probabilities
-          'los'  : (B, 10)  float32  logits
-          'pheno': (B, 25)  float32  probabilities
+        dict with keys 'ihm', 'decomp', 'pheno' and tensor values:
+          'ihm'   : (B, 1)   float32  probabilities
+          'decomp': (B, 1)   float32  probabilities
+          'pheno' : (B, 25)  float32  probabilities
         """
-        task_vecs = self.mmoe(concat_embedding)  # 3 × (B, expert_out)
+        if self.use_mmoe:
+            task_vecs = self.mmoe(concat_embedding)  # 3 × (B, expert_out)
+        else:
+            shared = self.shared_bottom(concat_embedding)  # (B, expert_out)
+            task_vecs = [shared] * len(self.TASK_ORDER)
         return {
             task: self.heads[task](vec)
             for task, vec in zip(self.TASK_ORDER, task_vecs)

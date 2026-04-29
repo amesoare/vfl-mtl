@@ -7,8 +7,8 @@ Measures:
   - Per-task AUC at final round
 
 Configurations:
-  n_sites=2 : Sites A + B only (IHM + LOS tasks; pheno weight = 0)
-  n_sites=3 : All three sites (IHM + LOS + Pheno)
+  n_sites=2 : Sites A + B only (IHM + Decomp tasks; pheno weight = 0)
+  n_sites=3 : All three sites (IHM + Decomp + Pheno)
 
 Seeds: [42, 123, 7]
 Output: results/exp4.csv
@@ -28,8 +28,11 @@ import csv
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from train import run_training, TrainConfig
+from data_prep.dataset import build_site_loaders
 
 SEEDS = [42, 123, 7]
 
@@ -46,22 +49,44 @@ def rounds_to_convergence(losses: list[float], threshold: float = 0.001, window:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--splits_dir",    default="data/vertical_splits")
-    parser.add_argument("--n_rounds",      type=int, default=50)
+    parser.add_argument("--n_rounds",      type=int, default=100)
     parser.add_argument("--batch_size",    type=int, default=64)
-    parser.add_argument("--device",        default="cpu")
+    parser.add_argument("--device",        default="cuda" if __import__("torch").cuda.is_available() else "cpu")
     parser.add_argument("--output",        default="results/exp4.csv")
     parser.add_argument("--use_synthetic", action="store_true",
                         help="Use random synthetic data (smoke test, no real data needed)")
     parser.add_argument("--n_synthetic",   type=int, default=256)
+    parser.add_argument("--patience",      type=int, default=15,
+                        help="Early stopping patience in rounds (0 = disabled)")
     args = parser.parse_args()
+
+    if args.use_synthetic:
+        prebuilt_by_nsites = {2: None, 3: None}
+        decomp_pos_weight = 1.0
+    else:
+        print("[exp4] Pre-loading data loaders (one-time GPFS read)...")
+        project_root = Path(args.splits_dir).parents[1]
+        site_b_csv = Path(args.splits_dir) / "site_B_labs.csv"
+        _b = pd.read_csv(site_b_csv, usecols=["y_decomp", "split"])
+        pos_rate = float(_b[_b["split"] == "train"]["y_decomp"].mean())
+        decomp_pos_weight = (1.0 - pos_rate) / pos_rate
+        print(f"[exp4] decomp pos_weight={decomp_pos_weight:.1f} (pos_rate={pos_rate:.3%})")
+        # n_sites=3 loaders contain all sites; n_sites=2 reuses A+B from the same load.
+        all_loaders = {
+            "train": build_site_loaders(project_root, "train", args.batch_size),
+            "val":   build_site_loaders(project_root, "val",   args.batch_size),
+            "decomp_pos_weight": decomp_pos_weight,
+        }
+        prebuilt_by_nsites = {2: all_loaders, 3: all_loaders}
+        print("[exp4] Data loaded. Starting training runs...")
 
     all_rows = []
 
     for n_sites in [2, 3]:
         task_weights = (
-            {"ihm": 1.0, "los": 1.0, "pheno": 0.0}
+            {"ihm": 1.0, "decomp": 1.0, "pheno": 0.0}
             if n_sites == 2
-            else {"ihm": 1.0, "los": 1.0, "pheno": 1.0}
+            else {"ihm": 1.0, "decomp": 1.0, "pheno": 1.0}
         )
         for seed in SEEDS:
             print(f"\n=== n_sites={n_sites} | seed={seed} ===")
@@ -73,12 +98,15 @@ def main():
                 seed=seed,
                 n_sites=n_sites,
                 task_weights=task_weights,
+                uncertainty_weighting=True,
                 use_fedavg=True,
                 fedavg_every=5,
                 use_synthetic=args.use_synthetic,
                 n_synthetic=args.n_synthetic,
+                patience=args.patience,
+                decomp_pos_weight=decomp_pos_weight,
             )
-            results = run_training(cfg)
+            results = run_training(cfg, prebuilt_loaders=prebuilt_by_nsites[n_sites])
             losses = [r["train_loss"] for r in results]
             conv_round = rounds_to_convergence(losses)
             print(f"  Convergence round: {conv_round}/{args.n_rounds}")

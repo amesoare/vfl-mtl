@@ -20,13 +20,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Brand palette — 7 HEX codes
-_C = ["#fbb45e", "#5b3b3e", "#ad8d86", "#c99379", "#afc4d5", "#7d7585", "#353b56"]
+_C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d"]
 
 PALETTE = {
     # Exp 1 — model variants
     "VFL-MTL":   _C[0],
     "ST-IHM":    _C[1],
-    "ST-LOS":    _C[2],
+    "ST-Decomp": _C[2],
     "ST-Pheno":  _C[3],
     # Exp 2 — split configs
     "default":   _C[4],
@@ -35,7 +35,7 @@ PALETTE = {
     # Exp 3 — task configs
     "all_tasks": _C[0],
     "ihm_only":  _C[1],
-    "ihm_los":   _C[2],
+    "ihm_decomp": _C[2],
     "ihm_pheno": _C[3],
     # Exp 4 — n_sites
     2:           _C[4],
@@ -98,10 +98,10 @@ def main():
 
     # ── Row 0 · Exp 1 ────────────────────────────────────────────────────────
     # Only show models that actually train the task on each subplot.
-    # ST-LOS/ST-Pheno IHM heads are untrained (weight=0) → excluded from IHM plot.
-    ihm_models   = exp1[exp1["model"].isin(["VFL-MTL", "ST-IHM"])]
-    los_models   = exp1[exp1["model"].isin(["VFL-MTL", "ST-LOS"])]
-    pheno_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-Pheno"])]
+    # ST-Decomp/ST-Pheno IHM heads are untrained (weight=0) → excluded from IHM plot.
+    ihm_models    = exp1[exp1["model"].isin(["VFL-MTL", "ST-IHM"])]
+    decomp_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-Decomp"])]
+    pheno_models  = exp1[exp1["model"].isin(["VFL-MTL", "ST-Pheno"])]
 
     mu, sd = agg_metric(ihm_models, "model", "val_ihm_auroc")
     bar_group(axes[0, 0], mu.index.tolist(), mu.values, sd.values,
@@ -109,12 +109,11 @@ def main():
     axes[0, 0].axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="chance")
     axes[0, 0].legend(fontsize=7)
 
-    mu, sd = agg_metric(los_models, "model", "val_los_kappa")
+    mu, sd = agg_metric(decomp_models, "model", "val_decomp_auroc")
     bar_group(axes[0, 1], mu.index.tolist(), mu.values, sd.values,
-              "LOS Cohen's κ", "Exp1 · LOS Kappa\nVFL-MTL vs ST-LOS")
-    axes[0, 1].axhline(0.0, color="#888888", linestyle="--", linewidth=0.8, label="chance (κ=0)")
-    axes[0, 1].legend(fontsize=7, loc="lower left", bbox_to_anchor=(0, 1.01),
-                      borderaxespad=0, frameon=False)
+              "Decomp AUC-ROC", "Exp1 · Decomp AUC-ROC\nVFL-MTL vs ST-Decomp")
+    axes[0, 1].axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="chance")
+    axes[0, 1].legend(fontsize=7)
 
     mu, sd = agg_metric(pheno_models, "model", "val_pheno_macro_auroc")
     bar_group(axes[0, 2], mu.index.tolist(), mu.values, sd.values,
@@ -130,12 +129,11 @@ def main():
               "IHM AUROC", "Exp2 · IHM AUROC\nFeature Split Sensitivity", rotation=15)
     axes[1, 0].axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
 
-    mu, sd = agg_metric(exp2, "split_config", "val_los_kappa")
+    mu, sd = agg_metric(exp2, "split_config", "val_decomp_auroc")
     bar_group(axes[1, 1], mu.index.tolist(), mu.values, sd.values,
-              "LOS Cohen's κ", "Exp2 · LOS Kappa\nFeature Split Sensitivity", rotation=15)
-    axes[1, 1].axhline(0.0, color="#888888", linestyle="--", linewidth=0.8, label="chance (κ=0)")
-    axes[1, 1].legend(fontsize=7, loc="lower left", bbox_to_anchor=(0, 1.01),
-                      borderaxespad=0, frameon=False)
+              "Decomp AUC-ROC", "Exp2 · Decomp AUC-ROC\nFeature Split Sensitivity", rotation=15)
+    axes[1, 1].axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="chance")
+    axes[1, 1].legend(fontsize=7)
 
     mu, sd = agg_metric(exp2, "split_config", "val_pheno_macro_auroc")
     bar_group(axes[1, 2], mu.index.tolist(), mu.values, sd.values,

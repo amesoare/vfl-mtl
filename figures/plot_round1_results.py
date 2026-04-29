@@ -20,13 +20,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Brand palette — 7 HEX codes
-_C = ["#fbb45e", "#5b3b3e", "#ad8d86", "#c99379", "#afc4d5", "#7d7585", "#353b56"]
+_C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d"]
 
 PALETTE = {
     # Exp 1 — model variants
     "VFL-MTL":   _C[0],
     "ST-IHM":    _C[1],
-    "ST-LOS":    _C[2],
+    "ST-Decomp": _C[2],
     "ST-Pheno":  _C[3],
     # Exp 2 — split configs
     "default":   _C[4],
@@ -35,7 +35,7 @@ PALETTE = {
     # Exp 3 — task configs
     "all_tasks": _C[0],
     "ihm_only":  _C[1],
-    "ihm_los":   _C[2],
+    "ihm_decomp": _C[2],
     "ihm_pheno": _C[3],
     # Exp 4 — n_sites
     2:           _C[4],
@@ -94,7 +94,7 @@ def main():
     )
 
     # ── Exp 1 · IHM AUROC — only models that train IHM ──────────────────────
-    # ST-LOS and ST-Pheno have IHM loss weight = 0; their IHM head is
+    # ST-Decomp and ST-Pheno have IHM loss weight = 0; their IHM head is
     # untrained (random init), so val_ihm_auroc is noise — excluded here.
     ax = axes[0, 0]
     ihm_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-IHM"])]
@@ -113,12 +113,12 @@ def main():
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="chance")
     ax.legend(fontsize=7)
 
-    # ── Exp 1 · LOS Kappa — only models that train LOS ──────────────────────
+    # ── Exp 1 · Decomp AUC-ROC — only models that train Decomp ─────────────
     ax = axes[1, 0]
-    los_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-LOS"])]
-    mu, sd = agg_metric(los_models, "model", "val_los_kappa")
+    decomp_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-Decomp"])]
+    mu, sd = agg_metric(decomp_models, "model", "val_decomp_auroc")
     bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "LOS Cohen's κ", "Exp1 · LOS Kappa\nVFL-MTL vs ST-LOS")
+              "Decomp AUC-ROC", "Exp1 · Decomp AUC-ROC\nVFL-MTL vs ST-Decomp")
 
     # ── Exp 2 · IHM AUROC ────────────────────────────────────────────────────
     ax = axes[0, 2]

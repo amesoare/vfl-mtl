@@ -3,7 +3,7 @@ data/dataset.py — VFL-MTL PyTorch Dataset for MIMIC-III vertical splits.
 
 Each VFLSiteDataset represents one hospital site's view:
   - Site A (7 vitals)    → binary IHM label
-  - Site B (4 labs)      → LOS bin label (int 0-9, YerevaNN CustomBins)
+  - Site B (4 labs)      → Decompensation binary label (0/1)
   - Site C (3 composite) → multi-label phenotyping (25 ICD codes)
 
 The site CSVs (site_A_vitals.csv etc.) act as an index:
@@ -49,13 +49,16 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 # ---------------------------------------------------------------------------
-# YerevaNN LOS binning utilities
+# YerevaNN LOS binning utilities (dead code — kept for los_bins path only)
 # ---------------------------------------------------------------------------
-_BENCH = Path(__file__).parent.parent / "mimic3-benchmarks"
-if str(_BENCH) not in sys.path:
-    sys.path.insert(0, str(_BENCH))
-
-from mimic3models.metrics import CustomBins, get_bin_custom  # noqa: E402
+try:
+    _BENCH = Path(__file__).parent.parent / "mimic3-benchmarks"
+    if str(_BENCH) not in sys.path:
+        sys.path.insert(0, str(_BENCH))
+    from mimic3models.metrics import CustomBins, get_bin_custom  # noqa: E402
+except ModuleNotFoundError:
+    CustomBins = None  # type: ignore
+    get_bin_custom = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Feature and label column definitions
@@ -133,7 +136,7 @@ class VFLSiteDataset(Dataset):
     aligned_ids_csv : path to aligned_patient_ids.csv (PSI output)
     timeseries_root : YerevaNN task root directory that contains train/ and test/
                         Site A → .../in-hospital-mortality/
-                        Site B → .../length-of-stay/
+                        Site B → .../decompensation/
                         Site C → .../phenotyping/
     max_seq_len     : truncate / pad all sequences to this length (default 48)
     task_type       : 'binary' | 'los_bins' | 'multilabel'
@@ -176,6 +179,15 @@ class VFLSiteDataset(Dataset):
 
         self.stays       = site_df["stay"].tolist()
         self.subject_ids = site_df["subject_id"].tolist()
+
+        # Pre-load all timeseries into memory to avoid per-sample CSV reads
+        subdir = "test" if split == "test" else "train"
+        self._cache: dict[str, tuple] = {}
+        for stay in self.stays:
+            if stay not in self._cache:
+                self._cache[stay] = self._load_timeseries_from_disk(
+                    self.timeseries_root / subdir / stay
+                )
 
         # Pre-compute labels
         if task_type == "multilabel":
@@ -230,6 +242,9 @@ class VFLSiteDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _load_timeseries(self, stay_filename: str) -> tuple:
+        return self._cache[stay_filename]
+
+    def _load_timeseries_from_disk(self, path) -> tuple:
         """
         Load one raw timeseries CSV, bin to 1-hour intervals, impute, pad.
 
@@ -251,9 +266,6 @@ class VFLSiteDataset(Dataset):
         x    : np.ndarray (max_seq_len, n_features)  float32
         mask : np.ndarray (max_seq_len,)             float32
         """
-        subdir = "test" if self.split == "test" else "train"
-        path   = self.timeseries_root / subdir / stay_filename
-
         df = pd.read_csv(path)
 
         # Step 2 — bin fractional hours to integers
@@ -358,9 +370,9 @@ def build_site_loaders(
         "B": dict(
             site_csv        = splits_dir / "site_B_labs.csv",
             feature_cols    = SITE_B_FEATURES,
-            label_col       = "y_los",
-            timeseries_root = bench_dir / "length-of-stay",
-            task_type       = "los_bins",
+            label_col       = "y_decomp",
+            timeseries_root = bench_dir / "decompensation",
+            task_type       = "binary",
         ),
         "C": dict(
             site_csv        = splits_dir / "site_C_composite.csv",

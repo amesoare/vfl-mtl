@@ -20,17 +20,11 @@
 
 ABIDE I, ADHD-200, and COBRE are datasets used by Huang et al. (2023) in the FMTLJD paper,
 which is a baseline you cite and compare against. You do NOT need to download or run them.
-Your experiments reproduce FMTLJD only as a reported number comparison, not a code rerun. # ?? how is it comparable then 
+Your experiments reproduce FMTLJD only as a reported number comparison, not a code rerun. 
 
 ---
 
 ## MIMIC-III — Full Download & Setup Guide
-
-### What It Is
-MIMIC-III (Medical Information Mart for Intensive Care III) is a publicly available
-de-identified clinical database of ~42,000 ICU stays at Beth Israel Deaconess Medical
-Center. It contains vital signs, laboratory values, medications, diagnoses, and more.
-Access is free but requires credentialling via PhysioNet.
 
 ### What Will Be in Your Workspace After Setup
 
@@ -248,8 +242,8 @@ clinical benchmark.
 |--------|-----------------------------------|-------------------------|
 | Site A | Heart rate, SBP, DBP, Temp, SpO2, | In-hospital mortality   |
 |        | Resp rate, GCS total (7 vars)     | (binary, 48h window)    |
-| Site B | Glucose, pH, FiO2,                | Length-of-stay          |
-|        | Capillary refill (4 vars)         | (multi-class regression)|
+| Site B | Glucose, pH, FiO2,                | Decompensation          |
+|        | Capillary refill (4 vars)         | (binary, 24h window)    |
 | Site C | Height, Weight, Mean BP (3 vars)  | Phenotyping             |
 |        |                                   | (multi-label, 25 codes) |
 
@@ -269,7 +263,7 @@ original protocol are absent from the benchmark entirely (STATUS="verify", never
 
 1. Local-only (each site, single task, own features only)
 2. Centralised oracle (all features + all tasks pooled — upper bound)
-3. VFL-SingleTask: three per-site single-task baselines (ST-IHM, ST-LOS, ST-Pheno),
+3. VFL-SingleTask: three per-site single-task baselines (ST-IHM, ST-Decomp, ST-Pheno),
    each trained on its own site's task only — MTL contribution ablation.
    VFL with one shared task across all sites (e.g. IHM everywhere) is a separate
    variant not used in Exp 1, as it conflates task heterogeneity with MTL contribution.
@@ -308,7 +302,7 @@ Steps:
      - Compute intersection of patient sets across sites
      - Check label balance in each split of the aligned cohort (tolerance: 3pp vs. train);
        if imbalanced, re-assign splits using iterative stratification (Sechidis et al. 2011)
-       across all label signals: IHM (binary), LOS bins (10-class), phenotypes (25 binary)
+       across all label signals: IHM (binary), Decompensation (binary), phenotypes (25 binary)
      - Return stratified aligned patient index for training
   9. Validate: assert class balance (AUC-compatible), temporal coverage, no feature leakage across sites
 
@@ -360,8 +354,7 @@ Steps:
      - Input: (batch, time_steps, n_features_per_site); Output: embedding (batch, embed_dim=64)
   2. Write model/mmoe.py:
      - Class MMoEServer(nn.Module): 4 expert MLPs (64→128→64), per-task gating (softmax), task heads
-     - Task heads: binary (mortality/decomp) = Linear+Sigmoid; multi-class (LOS) = Linear+Softmax;
-       multi-label (pheno) = Linear+Sigmoid
+     - Task heads: binary (mortality/decomp) = Linear+Sigmoid; multi-label (pheno) = Linear+Sigmoid
   3. Write fl/client.py:
      - Class VFLClient: wraps SiteEncoder, handles local forward pass, stores embeddings
      - Method send_embedding(): returns detached embedding + gradient hook for backward pass
@@ -389,11 +382,11 @@ Goals:
 Experiments:
   Exp 1 — Task heterogeneity vs. homogeneity:
     - Compare VFL-MTL vs. three per-site single-task baselines:
-        ST-IHM   (Site A, IHM only  — ihm:1 los:0 pheno:0)
-        ST-LOS   (Site B, LOS only  — ihm:0 los:1 pheno:0)
-        ST-Pheno (Site C, Pheno only— ihm:0 los:0 pheno:1)
+        ST-IHM   (Site A, IHM only   — ihm:1 decomp:0 pheno:0)
+        ST-Decomp (Site B, Decomp only — ihm:0 decomp:1 pheno:0)
+        ST-Pheno (Site C, Pheno only  — ihm:0 decomp:0 pheno:1)
     - MTL gain per task = VFL-MTL metric − ST-{task} metric for the same task
-    - Metrics: per-task AUC-ROC, AUC-PR, Cohen's kappa (LOS), macro-AUC (phenotyping)
+    - Metrics: per-task AUC-ROC, AUC-PR, macro-AUC (phenotyping)
     - Note: VFL-SingleTask (shared IHM across all sites) was replaced by these three
       per-site baselines. Shared-task VFL is covered separately as baseline 3 in the
       baselines list; mixing it into Exp 1 conflated two distinct ablations.
@@ -429,16 +422,32 @@ Goals:
 Ablations:
   Abl 1 — No MMoE: replace with shared bottom MLP (no gating)
   Abl 2 — No PSI alignment: random patient pairing across sites
-  Abl 3 — No cut layer: transmit raw features (privacy upper bound reference)
+  Abl 3 — MMoE expert count sensitivity: sweep num_experts ∈ {2, 4, 8}
+  Abl 4 — MMoE gating ablation: replace softmax gating with uniform fixed weights
+  Abl 5 — Embedding dimension sensitivity: sweep embed_dim ∈ {32, 64, 128}
+           (also a communication-efficiency proxy: smaller embed_dim = less transmitted per round)
+
+  Note: "No cut layer / raw features" (original Abl 3) dropped — it removes VFL's
+  privacy guarantee and is better described as a theoretical upper bound reference
+  than a realistic ablation. MARS-VFL reported numbers serve this role instead.
+
+  Note: ST-IHM/ST-Decomp/ST-Pheno from Exp 1 serve as the MTL ablation (single-task
+  VFL variants within the same framework). Not re-run in Week 4.
 
 Steps:
-  1. Implement ablation variants as flags in model/mmoe.py and fl/server.py
-  2. Run ablations with same seeds as main experiments
-  3. Write figures/architecture_diagram.py (matplotlib or use BioRender export)
-  4. Write figures/negative_transfer_heatmap.py: task × model heatmap of AUC delta vs. local
-  5. Write figures/scalability_curves.py: rounds to convergence vs. number of institutions
-  6. Write figures/feature_split_sensitivity.py: bar chart of AUC per split configuration
-  7. Reproducibility pass:
+  1. Implement ablation variants as flags in model/mmoe.py and fl/server.py:
+     - use_mmoe: bool (False = shared bottom MLP, no gating)
+     - uniform_gating: bool (True = fixed equal weights, no learned gating)
+     - num_experts: int (sweep 2/4/8; already a TrainConfig field)
+     - embed_dim: int (sweep 32/64/128; already a TrainConfig field)
+  2. Run ablations with same seeds as main experiments [42, 123, 7]
+  3. Write experiments/run_ablations.py: single script covering Abl 1–5
+     Output: results/ablations.csv
+  4. Write figures/architecture_diagram.py (matplotlib or use BioRender export)
+  5. Write figures/negative_transfer_heatmap.py: task × model heatmap of AUC delta vs. local
+  6. Write figures/scalability_curves.py: rounds to convergence vs. number of institutions
+  7. Write figures/feature_split_sensitivity.py: bar chart of AUC per split configuration
+  8. Reproducibility pass:
      - Seed all random generators (torch, numpy, random)
      - Export conda environment: conda env export > environment.yml
      - Archive data split configs and model checkpoints
@@ -493,191 +502,369 @@ Deliverable: figures/ directory, environment.yml, reproducible experiment script
 
 # ══════════════════════════════════════════════════════
 # PAPER 2
-# Adaptive Differential Privacy for Federated
-# Multi-Task Learning: Per-Task Budget Allocation
-# and Label Inference Bounds
+# Differential Privacy in Vertical Federated
+# Multi-Task Learning: Resilience, Utility Thresholds,
+# and Multi-Task Label Inference Bounds
 # ══════════════════════════════════════════════════════
 
 ## CONTEXT & NOVELTY
 
 DP-SGD (Abadi et al., 2016) and its Rényi DP accountant treat all gradient flows
-uniformly — a single noise multiplier σ applied regardless of task. In an MTL setting
-this is wasteful: high-stakes tasks (mortality) warrant tighter privacy than exploratory
-tasks (phenotyping), and task gradient coupling creates leakage pathways that single-task
-DP analysis ignores entirely.
+uniformly — a single noise multiplier σ applied regardless of task. In a VFL-MTL setting
+this is insufficient: high-stakes tasks (IHM) and tasks that depend heavily on cross-site
+shared representations (Decomp, +0.125 MTL gain in Paper 1) have different sensitivity to
+DP noise, and task gradient coupling at the MMoE layer creates leakage pathways that
+single-task DP analysis ignores entirely.
 
 FMTLJD applies DP-SGD in FL-MTL but uses a uniform σ with no per-task privacy analysis.
-Liu et al. (2022) formally characterizes label inference attacks in VFL but only for
-single-task prediction. MTFSLaMM evaluates membership inference attacks (MIA) accuracy under DP in a non-clinical
+Liu et al. (2022) formally characterises label inference attacks in VFL but only for
+single-task prediction. MTFSLaMM evaluates MIA accuracy under DP in a non-clinical
 vision/audio setting without MTL-specific attack analysis.
 
-This paper provides the first formal per-task ε allocation framework and label inference
-bound for multi-task federated learning, validated clinically on MIMIC-III.
+This paper provides: (1) the first task-stratified ε sweep and clinical utility threshold
+analysis for VFL-MTL, directly answering at what ε level each task's clinical utility
+collapses; (2) a characterisation of training stability under DP stochasticity across
+tasks; (3) a multi-task label inference bound extending Liu et al. (2022) to the
+heterogeneous VFL-MTL setting; (4) an embedding-space attack suite specific to the VFL
+cut-layer architecture, validated on MIMIC-III.
 
-A second clean contribution closes the personalization-DP gap: pFedMe's Moreau envelope
-regularization is well-studied for utility but has no certified DP bound when fine-tuning
-layers are added post-aggregation.
+Note: pFedMe personalisation is architecturally incompatible with VFL-MTL — clients hold
+only their local LSTM encoder and never receive a full model copy for fine-tuning. That
+contribution is dropped entirely.
 
 ### Differentiation Table
 
-| Existing Work         | Limitation                           | Our Distinction                        |
-|-----------------------|--------------------------------------|----------------------------------------|
-| Abadi et al. (2016)   | Uniform σ across all gradients       | Per-task noise allocation              |
-| FMTLJD (2023)         | DP-SGD in FL-MTL, no task analysis   | Formal per-task ε accounting           |
-| Liu et al. (2022)     | Label inference in VFL, single-task  | Multi-task label inference bound       |
-| MTFSLaMM (2025)       | MIA in non-clinical, no MTL analysis | Clinical MTL-specific attack suite     |
-| pFedMe (2020)         | No DP analysis for fine-tuning       | Certified ε surcharge for fine-tuning  |
+| Existing Work         | Limitation                           | Our Distinction                                          |
+|-----------------------|--------------------------------------|----------------------------------------------------------|
+| Abadi et al. (2016)   | Uniform σ across all gradients       | Task-stratified noise allocation with empirical ε sweep  |
+| FMTLJD (2023)         | DP-SGD in FL-MTL, no task analysis   | Per-task ε quantification with gradient coupling analysis|
+| Liu et al. (2022)     | Label inference in VFL, single-task  | Multi-task label inference bound (ρ-extended)            |
+| MTFSLaMM (2025)       | MIA in non-clinical, no MTL analysis | Clinical VFL-MTL embedding-space attack suite            |
 
 ---
 
 ## THREAT MODEL
 
-- Honest-but-curious server: observes all embeddings and aggregated gradients; attempts
-  to infer per-institution task labels from gradient statistics
-- Passive party adversary: holds own features; observes returned gradients; attempts
-  attribute and label inference for the active party
-- Multi-task leakage surface: when K tasks share a common encoder, gradient correlation
-  across task heads amplifies reconstruction attacks compared to single-task VFL
+- Honest-but-curious server: observes all cut-layer embedding vectors from all clients;
+  attempts to infer per-institution task labels from embedding statistics and patterns
+- Passive party adversary: holds own features; observes returned embedding gradients
+  (∂L/∂z_i) from the server; attempts label inference for the active party from
+  gradient sign and magnitude (Fu et al., USENIX Security 2022)
+- Multi-task leakage surface: when K tasks share MMoE experts, embedding gradients
+  are correlated across task heads — the passive party observes a richer signal than
+  in single-task VFL, amplifying label inference risk as a function of task correlation ρ
 
 ---
 
 ## METHODS
 
-1. Adaptive DP-SGD:
-   - Assign per-task noise multipliers σ_1, ..., σ_K
-   - Constrained optimisation: minimise sum of per-task utility losses subject to
-     total budget ε_total = sum(ε_k)
-   - Pareto frontier: grid σ_k ∈ {0.5, 1.0, 1.5, 2.0} under fixed ε_total ∈ {1, 2, 5, 10}
+1. Task-stratified DP-SGD with ε sweep (answers SRQ2):
+   - Apply DP-SGD via Opacus to the VFL-MTL training loop; clip and noise embedding
+     gradients at each client before transmission to server
+   - Uniform σ sweep: ε ∈ {0.5, 1, 2, 5, 10, ∞ (no DP)}, 5 seeds per level
+   - Task-stratified variant: assign σ_IHM < σ_Decomp < σ_Pheno reflecting clinical
+     risk hierarchy; compare per-task AUC degradation against uniform baseline
+   - Define clinical utility floors per task: IHM ≥ 0.75, Decomp ≥ 0.70, Pheno ≥ 0.65
+     (grounded in Harutyunyan et al. 2019 benchmark thresholds)
+   - Identify ε* per task: the ε below which AUC drops below the clinical floor
+   - Standard Rényi DP accounting via Opacus (Mironov 2017; Yousefpour et al. 2021)
 
-2. Rényi DP composition extension:
-   - Prove composition theorem for coupled multi-task gradients
-   - Bound total ε inflation from gradient correlation across task heads
-   - Empirical gradient correlation matrix estimated from first training epoch
+2. DP stochasticity resilience analysis (answers SRQ1):
+   - At each ε level, report std(AUC) across 5 seeds as variance inflation index
+   - Report convergence round (first round where val AUC exceeds 90% of no-DP plateau)
+   - Empirical gradient correlation matrix: estimate Pearson correlation of per-task
+     embedding gradient vectors across task heads during first training epoch; report
+     observed ε inflation relative to Opacus single-task baseline
+   - Key hypothesis: Decomp (highest MTL gain in Paper 1, most dependent on shared
+     representation) will show highest variance inflation and earliest utility collapse
+     under DP noise
 
 3. Label inference bound:
    - Formally upper-bound mutual information I(passive observations; active labels)
      as a function of σ and task correlation coefficient ρ
    - Validate bound against empirically measured attack accuracy
 
-4. DP-compatible personalisation:
-   - Certify pFedMe fine-tuning layers incur bounded additional ε inflation
-   - Derive fine-tuning ε surcharge as a function of fine-tuning learning rate and steps
+4. Embedding-space attack suite (VFL-specific):
+   - Label inference attack: linear probe trained on cut-layer embedding vectors
+     (z_i received by server) to infer active party labels; report inference rate
+     at each ε level (target: near random chance under sufficient DP)
+   - Embedding MIA: binary classifier trained on embedding vectors to distinguish
+     member vs. non-member patients; consistent with Luo et al. (CCS 2021) and
+     Weng et al. (2021) who operate on embeddings rather than raw gradients
+   - Note: gradient-norm MIA (Carlini et al. 2022) is not used — it requires
+     white-box gradient access; in VFL the server observes embeddings, not raw
+     parameter gradients
 
 ---
 
-## IMPLEMENTATION & WRITING PLAN — 4 WEEKS
+## IMPLEMENTATION & WRITING PLAN — 2 WEEKS
 
-### WEEK 1 — Adaptive DP-SGD Framework
+**Builds on:** Paper 1 VFL-MTL setup (model/, fl/, data_prep/, experiments/)
+**Key reuse:** fl/server.py::compute_task_gradient_similarity() already computes pairwise
+cosine similarity between per-task gradients at shared expert parameters (Yu et al. 2020).
+Use directly for the gradient coupling matrix — no new code needed for ρ estimation.
+
+### WEEK 1 — DP-SGD Integration + Accounting + ε Sweep
 
 Goals:
-  - Extend Opacus to support per-task noise multipliers
-  - Implement per-task Rényi DP accountant
-  - Implement Pareto frontier search
+  - VFL-MTL training loop runs under DP-SGD
+  - Rényi accounting works; per-task ε tracked
+  - Full privacy-utility curves complete by end of week
+
+#### Days 1–2: Core DP Module
 
 Steps:
-  1. Install dependencies: pip install opacus torch numpy scipy
+  1. Install Opacus: pip install opacus>=1.4.0
+     Verify compatibility with existing torch version in requirements.txt.
+
   2. Write privacy/adaptive_dpsgd.py:
-     - Subclass opacus.GradSampleModule to attach per-task noise multipliers
-     - Override _add_noise(): apply σ_k to gradients from task head k only
-     - Maintain separate per-task moments accumulator
+     - Wrap each site's SiteEncoder with opacus.GradSampleModule
+     - Clip per-sample gradients at each client: max_grad_norm parameter per task
+     - Add Gaussian noise scaled to σ_k per task head's gradient contribution
+     - Maintain per-task noise multiplier dict: {ihm: σ_ihm, decomp: σ_decomp, pheno: σ_pheno}
+     - Expose set_uniform(σ) and set_stratified(σ_ihm, σ_decomp, σ_pheno) interfaces
+     - Integration point: called inside fl/client.py receive_gradient() before
+       applying gradients to the local encoder
+
   3. Write privacy/renyi_accountant.py:
-     - Implement per-task Rényi DP tracking: alpha-order moments per task
-     - Add cross_task_coupling_correction(): estimate ε inflation from empirical
-       gradient correlation matrix (Pearson correlation of per-task gradient vectors)
-     - Validate against opacus RDP accountant on single-task case (must match)
-  4. Write privacy/pareto_search.py:
-     - Grid search over σ_1, σ_2 ∈ {0.5, 1.0, 1.5, 2.0}
-     - For each configuration: run 3-round training, record (ε_total, AUC_mortality, AUC_pheno)
-     - Plot Pareto frontier: scatter plot of ε_total vs. weighted AUC
+     - Wrap standard opacus.accountants.RDPAccountant for per-task ε tracking
+     - step(noise_multiplier, sample_rate, num_steps) per task
+     - get_epsilon(delta=1e-5) returns dict {task: ε_k}
+     - cross_task_coupling_matrix(): compute Pearson correlation matrix of per-task
+       embedding gradient vectors (∂L_k/∂z_i) estimated over first 5 training rounds
+       using server.compute_task_gradient_similarity() already in fl/server.py
+     - coupling_epsilon_inflation(): empirical ε_total vs. sum(ε_k) difference
+     - Unit test: single-task ε must match opacus reference ± 1e-4
+
+  4. Modify train.py to accept privacy_config:
+     - privacy_config = None → no DP (Paper 1 behaviour unchanged)
+     - privacy_config = {mode: 'uniform', sigma: float, delta: 1e-5} → uniform DP
+     - privacy_config = {mode: 'stratified', sigma_ihm:, sigma_decomp:, sigma_pheno:}
+     - Log ε per task at end of each round to results CSV
+
   5. Unit tests:
-     - Assert single-task ε matches opacus reference
-     - Assert per-task ε sum <= ε_total + tolerance
-     - Assert higher σ yields lower ε
+     - Assert ε increases monotonically with rounds
+     - Assert higher σ → lower ε at same round count
+     - Assert per-task ε sum ≤ ε_total + 1e-3
+     - Assert encoder gradients are clipped to max_grad_norm
 
-Deliverable: privacy/ module with unit tests, Pareto frontier plot
-
----
-
-### WEEK 2 — Attack Suite & Privacy-Utility Experiments
-
-Goals:
-  - Implement black-box MIA, white-box MIA, label inference attack
-  - Run privacy-utility curves
-
-Steps:
-  1. Write attacks/shadow_mia.py (black-box MIA):
-     - Train 5 shadow models on disjoint MIMIC-III subsets (same architecture as main model)
-     - Generate (member, non-member) pairs with confidence vectors
-     - Train binary attack classifier (logistic regression on confidence vector)
-     - Report attack AUC and accuracy (target: ≈ 0.50 under good DP)
-  2. Write attacks/gradient_mia.py (white-box MIA):
-     - Carlini et al. (2022) approach: use gradient norm as membership score
-     - Threshold sweep to compute TPR at low FPR (ROC curve)
-  3. Write attacks/label_inference.py:
-     - At passive party: train linear probe from received embedding vectors to active labels
-     - Report fraction of labels correctly inferred (target: near random chance under DP)
-  4. Write experiments/privacy_utility_curves.py:
-     - For ε ∈ {0.5, 1, 2, 5, 10}: train VFL-MTL with corresponding σ (use moments accountant)
-     - Record per-task AUC-ROC at each ε
-     - Generate: (a) per-task AUC vs. ε line plot; (b) uniform σ vs. Pareto allocation comparison
-
-Deliverable: attacks/ module, results/privacy_utility.csv, privacy-utility figure
+Deliverable Days 1–2: privacy/ module passing unit tests; train.py accepts privacy_config
 
 ---
 
-### WEEK 3 — Personalisation DP Analysis & Ablations
+#### Days 3–5: ε Sweep + Resilience Analysis (SRQ1 + SRQ2)
 
-Goals:
-  - Certify DP bound for pFedMe fine-tuning
-  - Confirm gradient coupling hypothesis empirically
+  6. Write experiments/privacy_utility_curves.py:
+     ε levels: {∞ (no DP), 10, 5, 2, 1, 0.5}; seeds: [42, 123, 7, 17, 99]
+     - Compute σ from ε using Opacus get_noise_multiplier() (target_delta=1e-5,
+       sample_rate=batch/N, epochs=50)
+     - Run VFL-MTL for 50 rounds (uniform σ mode)
+     - Log: round, seed, ε_level, val_ihm_auroc, val_decomp_auroc,
+       val_pheno_macro_auroc, convergence_round
+     - Output: results/privacy_utility.csv
 
-Steps:
-  1. Write fl/pfedme_dp.py:
-     - Implement pFedMe Moreau envelope on Paper 1's VFL-MTL model
-     - Add DP noise to fine-tuning gradient updates
-     - Instrument: track additional ε per fine-tuning epoch as a function of
-       learning rate η and number of fine-tuning steps T_ft
-     - Derive empirical ε surcharge table: η ∈ {1e-4, 1e-3} × T_ft ∈ {5, 10, 20}
-  2. Write experiments/ablations_dp.py:
-     - Abl 1: Uniform σ vs. Pareto-optimal σ — measure per-task AUC gain at fixed ε_total=5
-     - Abl 2: Related tasks (mortality + decomp) vs. unrelated (mortality + pheno) —
-       measure MIA accuracy difference to confirm gradient coupling amplification
-     - Abl 3: With vs. without pFedMe fine-tuning — measure ε inflation and AUC gain
-  3. Write experiments/validate_bound.py:
-     - For ρ ∈ {0.1, 0.3, 0.5, 0.7, 0.9}: compute theoretical MI bound and empirical
-       label inference accuracy; plot theoretical vs. empirical comparison
+  7. Run task-stratified variant:
+     Clinical risk hierarchy: σ_IHM < σ_Decomp < σ_Pheno
+     - Fix ε_total = 5; allocate as ε_IHM=2, ε_Decomp=2, ε_Pheno=1
+     - Compare per-task AUC against uniform σ at same ε_total=5
+     - Output: added rows in results/privacy_utility.csv with mode=stratified
 
-Deliverable: ablation CSVs, bound validation figure, ε surcharge table
+  8. SRQ1 resilience metrics:
+     - std(AUC) across 5 seeds per ε level per task → variance inflation index
+     - Convergence round: first round where val_AUC ≥ 0.90 × AUC(ε=∞)
+     - Plot: figures/resilience_variance.py — std(AUC) vs. ε, one line per task
+
+  9. SRQ2 threshold identification:
+     - For each task, find ε* = min ε where mean(AUC) ≥ clinical floor
+       (IHM ≥ 0.75, Decomp ≥ 0.70, Pheno ≥ 0.65; Harutyunyan et al. 2019)
+     - If no ε in sweep meets floor: flag as "DP-incompatible at tested budgets"
+
+Deliverable end of Week 1: results/privacy_utility.csv, SRQ1 and SRQ2 numerically
+answered, figures/privacy_utility_plot.py, figures/resilience_variance.py
 
 ---
 
-### WEEK 4 — Writing
+### WEEK 2 — Attack Suite + Label Inference Bound + Writing
 
 Goals:
-  - Full paper draft + revision
+  - Embedding-space attacks evaluated across ε levels
+  - Multi-task label inference bound derived and validated
+  - Full paper draft complete
 
-Steps:
-  Days 1–2: Introduction + Threat Model + Related Work
-    - Introduction: motivate per-task ε allocation with clinical risk-stratification argument
-    - Threat model: define honest-but-curious server, passive party adversary, MTL leakage surface
-    - Related Work (~1.5 pages): DP-FL (Abadi, Dwork), VFL privacy (Liu 2022), MTL-FL (FMTLJD),
-      personalised FL (pFedMe), membership inference (Carlini 2022)
+#### Days 6–7: Attack Suite
 
-  Days 3–4: Methods
-    - Adaptive DP-SGD formulation
-    - Rényi DP composition extension (include key theorem + proof sketch)
-    - Label inference MI bound (include proposition + proof)
-    - pFedMe DP surcharge derivation
-    - Evaluation setup: MIMIC-III, baselines (uniform DP, task-dropout DP, non-private oracle)
+  1. Write attacks/label_inference.py:
+     Threat model: passive party (e.g. Site B) observes cut-layer embeddings z_A
+     and z_C returned by server.
+     - Extract embedding vectors at the cut layer for all validation patients
+       at each ε level (load saved embeddings from privacy_utility runs)
+     - Train logistic regression probe: input = z_A (or z_C), output = active party
+       labels (IHM labels at Site A, Pheno labels at Site C)
+     - Report: fraction of labels correctly inferred per task per ε level
+     - Target under good DP: near random chance (IHM ≈ prevalence rate ~10%)
 
-  Days 5–6: Experiments + Results + Discussion
-    - Privacy-utility curves (all tasks)
-    - MIA results table (black-box, white-box, label inference)
-    - Ablation table
-    - Bound validation figure
-    - Discussion: risk-stratified ε as GDPR Article 25 compliance argument
+  2. Write attacks/embedding_mia.py:
+     - Split patients: 50% members (in training set), 50% non-members (held out)
+     - Extract cut-layer embeddings for both groups at each ε level
+     - Train binary classifier (logistic regression) to distinguish member vs. non-member
+     - Report: attack AUC and accuracy at each ε level
+     - Target under good DP: AUC ≈ 0.50
+     Note: gradient-norm MIA (Carlini et al. 2022) not used — requires white-box
+     gradient access which the server does not have in VFL.
 
-  Day 7: Abstract + polish + co-author review + submission package
+#### Days 7–8: Label Inference Bound + Ablations
+
+  3. Label inference bound: extend Liu et al. (2022) to multi-task VFL
+     Liu et al. (2022): I(z; y) ≤ g(σ) for single-task VFL.
+     Extension:
+     - Let ρ = Pearson correlation between ∂L_k/∂z and ∂L_j/∂z for tasks k ≠ j
+       (estimated from renyi_accountant.cross_task_coupling_matrix() in Week 1)
+     - Proposition: I(z; y_1, ..., y_K) ≤ g(σ, ρ) where g is monotonically increasing in ρ
+     - Proof sketch: at the point in Liu et al.'s derivation where the single-task
+       assumption enters, substitute the multi-task gradient correlation term; show
+       that higher ρ increases the mutual information upper bound
+
+     Write experiments/validate_bound.py:
+     - For each ε level: compute ρ from first-epoch gradients + compute theoretical
+       bound g(σ, ρ) + measure empirical label inference accuracy
+     - Plot: theoretical bound vs. empirical accuracy across ε levels and ρ values
+     - Output: results/bound_validation.csv
+
+  4. Write experiments/ablations_dp.py:
+     - Abl 1: Uniform σ vs. task-stratified σ at ε_total=5 — per-task AUC comparison
+     - Abl 2: Related task pair (IHM + Decomp, ρ high) vs. unrelated (IHM + Pheno, ρ low)
+       — label inference accuracy difference to confirm coupling amplification
+     - Output: results/dp_ablations.csv
+
+Deliverable Days 6–8: attacks/ module, results/bound_validation.csv,
+results/dp_ablations.csv, bound proposition written up
+
+#### Days 9–10: Figures + Results Assembly
+
+  5. Write figures/privacy_utility_plot.py:
+     - Three-panel line plot: one panel per task (IHM / Decomp / Pheno)
+     - x-axis: ε (log scale); y-axis: mean AUC ± std across 5 seeds
+     - Two lines per panel: uniform σ vs. task-stratified σ
+     - Horizontal dashed line: clinical utility floor; vertical marker: ε*
+
+  6. Write figures/bound_validation.py:
+     - Theoretical MI bound vs. empirical label inference accuracy across ε levels
+     - One line per ρ value
+
+Deliverable Days 9–10: all figures complete, results assembled
+
+#### Days 10–14: Writing
+
+  Introduction (Day 10):
+    - Clinical motivation: hospital consortia, heterogeneous EHR, VFL without feature sharing
+    - Gap: no existing work studies DP resilience or utility thresholds in VFL with
+      heterogeneous task sets on clinical data
+    - Four contribution bullets (see Differentiation Table above)
+    - SRQ1 and SRQ2 stated explicitly
+
+  Threat Model + Related Work (Day 10):
+    - Honest-but-curious server observes cut-layer embeddings
+    - Passive party adversary observes returned embedding gradients ∂L/∂z_i
+    - Multi-task leakage surface: MMoE gradient correlation amplifies label inference risk
+      (cite Fu et al. 2022, Liu et al. 2022)
+    - Related Work (~1.5 pages): DP-FL (Abadi, McMahan), VFL privacy (Liu, Luo, Fu),
+      MTL-FL (FMTLJD, MTFSLaMM), MIA (Shokri 2017, Weng 2021), clinical FL (Harutyunyan)
+
+  Methods (Day 11):
+    - DP-SGD integration in VFL cut-layer architecture
+    - Task-stratified noise allocation formulation
+    - Rényi DP accounting + gradient coupling measurement
+    - Multi-task label inference bound (proposition + proof sketch)
+    - Embedding-space attack suite design
+    - Evaluation setup: MIMIC-III, ε sweep, 5 seeds, clinical utility floors
+
+  Results (Days 12–13):
+    - Per-task AUC vs. ε line plot (privacy-utility curves, 3 tasks)
+    - std(AUC) vs. ε per task (SRQ1 figure)
+    - ε* per task table (SRQ2 answer)
+    - Theoretical bound vs. empirical label inference accuracy (bound validation)
+    - Ablation table: uniform vs. stratified σ; related vs. unrelated task pairs
+    - MIA results table at each ε level
+
+  Discussion (Day 13):
+    - Which task loses utility first under DP and why (Decomp hypothesis)
+    - Risk-stratified ε allocation as GDPR Article 25 "data protection by design" argument
+    - Limitations: MIMIC-III simulation, single DP mechanism (Gaussian), no adaptive
+      clipping, conservative ε composition under correlated tasks
+
+  Abstract + polish (Day 14)
+
+  Reporting format (following FMTLJD precedent):
+    - All AUC values: mean ± std across 5 seeds
+    - All ε values with explicit δ=1e-5
+    - Per-task results in separate rows/panels — do not average across tasks
+
+Deliverable: full paper draft ready for co-author review
+
+---
+
+## EXPECTED FIGURES
+
+### Figure 1 — Privacy-Utility Curves (figures/privacy_utility_plot.py)
+
+Answers SRQ2 — at what ε does utility collapse?
+
+Three-panel line plot, one panel per task (IHM / Decomp / Pheno):
+  - x-axis: ε ∈ {0.5, 1, 2, 5, 10, ∞} on log scale
+  - y-axis: mean AUC-ROC ± std across 5 seeds
+  - Two lines per panel: uniform σ vs. task-stratified σ
+  - Horizontal dashed line: clinical utility floor (IHM=0.75, Decomp=0.70, Pheno=0.65)
+  - Vertical marker: ε* — the crossing point where mean AUC drops below floor
+
+The stratified line uses σ_IHM < σ_Decomp < σ_Pheno (tightest noise for highest-stakes task).
+The gap between the two lines at each ε level shows the benefit of risk-stratified allocation.
+
+### Figure 2 — Resilience Variance Plot (figures/resilience_variance.py)
+
+Answers SRQ1 — how much does DP stochasticity destabilize training?
+
+Single panel:
+  - x-axis: ε (log scale)
+  - y-axis: std(AUC) across 5 seeds — the variance inflation index
+  - One line per task (IHM, Decomp, Pheno)
+  - Expected: Decomp line rises steepest (highest MTL gain in Paper 1 = most dependent
+    on shared representation = most sensitive to DP noise on shared gradients)
+
+Convergence round is computed from the same CSV and reported as a table alongside ε*.
+
+### Figure 3 — Bound Validation (figures/bound_validation.py)
+
+Answers the theoretical contribution — does the multi-task label inference bound hold?
+
+Single panel:
+  - x-axis: ε levels
+  - y-axis: mutual information upper bound (theoretical) and empirical label inference
+    accuracy (from attacks/label_inference.py)
+  - One line per ρ value (ρ ∈ {0.1, 0.3, 0.5, 0.7, 0.9} — task gradient correlation)
+  - Theoretical bound g(σ, ρ) overlaid with empirical accuracy points
+
+### Tables (results, not figures)
+
+| Table              | Source                        | Content                                                               |
+|--------------------|-------------------------------|-----------------------------------------------------------------------|
+| ε* per task        | privacy_utility.csv           | SRQ2 answer — one row per task, ε* and floor-met flag                 |
+| MIA results        | attacks/embedding_mia.py      | Attack AUC + accuracy at each ε level; target ≈ 0.50                 |
+| Label inference    | attacks/label_inference.py    | Fraction of labels correctly inferred per task per ε level            |
+| DP ablations       | results/dp_ablations.csv      | Abl 1: uniform vs. stratified σ; Abl 2: related vs. unrelated pairs   |
+
+### RQ → Figure Map
+
+  SRQ1 (DP resilience)     → Figure 2: resilience_variance.py
+  SRQ2 (utility threshold) → Figure 1: privacy_utility_plot.py + ε* table
+  Theoretical bound        → Figure 3: bound_validation.py
+  Attack effectiveness     → MIA table + label inference table
+  Stratified vs. uniform   → Figure 1 (both lines) + ablation table (Abl 1)
+  Coupling amplification   → ablation table (Abl 2) + Figure 3 (ρ lines)
+
+Not visualized (by design):
+  - Gradient coupling matrix: computed inside renyi_accountant.cross_task_coupling_matrix(),
+    reported as a scalar in text
+  - Convergence round per ε: reported as a table row alongside ε*, not a standalone figure
 
 ---
 
@@ -696,35 +883,35 @@ vfl_mtl/
     mmoe.py                   # Server-side MMoE + task heads
   fl/
     client.py                 # VFL client: embedding send/receive
-    server.py                 # VFL server: aggregation + loss
+    server.py                 # VFL server: aggregation + loss + gradient similarity
     fedavg.py                 # FedAvg aggregation
     fedprox.py                # FedProx proximal regularization
-    pfedme_dp.py              # DP-compatible pFedMe fine-tuning
   privacy/
-    adaptive_dpsgd.py         # Per-task noise multiplier extension
-    renyi_accountant.py       # Per-task Rényi DP tracking
-    pareto_search.py          # σ allocation Pareto frontier
+    adaptive_dpsgd.py         # Opacus wrapper, per-task σ assignment, gradient clipping
+    renyi_accountant.py       # Per-task Rényi DP tracking + gradient correlation matrix
   attacks/
-    shadow_mia.py             # Black-box MIA (shadow model)
-    gradient_mia.py           # White-box MIA (gradient norm)
-    label_inference.py        # Linear probe label inference
+    label_inference.py        # Linear probe on cut-layer embeddings → active labels
+    embedding_mia.py          # Binary classifier on embeddings → member/non-member
   experiments/
     run_exp1.py               # Task heterogeneity vs. homogeneity
     run_exp2.py               # Feature asymmetry
     run_exp3.py               # Task relatedness + negative transfer
     run_exp4.py               # Scalability
-    privacy_utility_curves.py # ε vs. AUC sweep
-    ablations_dp.py           # DP ablations
-    validate_bound.py         # Theoretical bound validation
+    privacy_utility_curves.py # ε sweep, 5 seeds, per-task AUC + std
+    ablations_dp.py           # Task-stratified vs. uniform σ; related vs. unrelated tasks
+    validate_bound.py         # ρ sweep, theoretical bound vs. empirical inference accuracy
   results/
     exp1.csv ... exp4.csv
     privacy_utility.csv
+    dp_ablations.csv
+    bound_validation.csv
   figures/
     architecture_diagram.py
     negative_transfer_heatmap.py
     scalability_curves.py
-    privacy_utility_plot.py
-    bound_validation.py
+    privacy_utility_plot.py   # Per-task AUC vs. ε line plot
+    resilience_variance.py    # std(AUC) vs. ε per task
+    bound_validation.py       # Theoretical vs. empirical MI bound comparison
   train.py
   requirements.txt
   environment.yml
@@ -758,12 +945,11 @@ MIMIC-III pipeline:
 |-----------------------|-----------------|------------------------|------------------------|
 | In-hospital mortality | AUC-ROC         | AUC-PR, F1 at opt thr  | Harutyunyan et al 2019 |
 | Decompensation        | AUC-ROC         | AUC-PR                 | Harutyunyan et al 2019 |
-| Length-of-stay        | Cohen's kappa   | Mean absolute deviation| Harutyunyan et al 2019 |
+| Length-of-stay        | Cohen's kappa   | Mean absolute deviation| Harutyunyan et al 2019 | (reference only — not used in experiments; Site B uses Decompensation)
 | Phenotyping           | Macro-AUC       | Micro-AUC              | Harutyunyan et al 2019 |
 | Privacy (formal)      | (ε, δ)          | ε ≤ 10, δ ≤ 1e-5       | Abadi et al 2016       |
-| Privacy (empirical)   | MIA accuracy    | Target ≈ 0.50          | Carlini et al 2022     |
+| Privacy (empirical)   | MIA accuracy    | Target ≈ 0.50          | Weng et al 2021        |
 | Label inference       | Inference rate  | Near random chance     | Liu et al 2022         |
-| Personalisation gain  | Δ AUC-ROC       | Per-client breakdown   | pFedMe (Dinh 2020)     |
 
 ---
 
@@ -774,12 +960,17 @@ Huang et al. (2023) FMTLJD. IEEE TBME.     https://doi.org/10.1109/TBME.2022.321
 Dong et al. (2025) MTFSLaMM. Sensors.      https://doi.org/10.3390/s25010233
 Harutyunyan et al. (2019) MIMIC benchmarks. Sci Data. https://doi.org/10.1038/s41597-019-0103-9
 McMahan et al. (2017) FedAvg. AISTATS.     https://arxiv.org/abs/1602.05629
+McMahan et al. (2018) DP LSTM FL. ICLR.   https://arxiv.org/abs/1710.06963
 Li et al. (2020) FedProx. MLSys.           https://arxiv.org/abs/1812.06127
-Dinh et al. (2020) pFedMe. NeurIPS.        https://arxiv.org/abs/2006.08848
 Abadi et al. (2016) DP-SGD. CCS.           https://doi.org/10.1145/2976749.2978318
+Mironov (2017) Rényi DP. CSF.             https://doi.org/10.1109/CSF.2017.11
+Yousefpour et al. (2021) Opacus. arXiv.   https://arxiv.org/abs/2109.12298
 Dwork & Roth (2014) DP Foundations.        https://doi.org/10.1561/0400000042 # Cannot get access to the article yet
 Yang et al. (2019) FL Taxonomy. TIST.      https://doi.org/10.1145/3298981
 Liu et al. (2022) VFL Survey. IEEE TKDE.   https://doi.org/10.1109/TKDE.2022.3220872 #DOI not working
+Fu et al. (2022) Label inference in VFL. USENIX Security.
+Luo et al. (2021) Feature inference VFL. CCS. https://dl.acm.org/doi/10.1145/3460120.3485370
+Weng et al. (2021) Privacy leakage VFL. arXiv. https://arxiv.org/abs/2011.09290
 Romanini et al. (2021) PyVertical. arXiv.  https://arxiv.org/abs/2104.00489
 Castiglia et al. (2023) LESS-VFL. ICML.    https://proceedings.mlr.press/v202/castiglia23a
 Ma et al. (2018) MMoE. KDD.                https://doi.org/10.1145/3219819.3220007  # Maybe also useful: https://arxiv.org/html/2602.12708v1
@@ -797,13 +988,10 @@ Caruana (1997) MTL. Machine Learning.      https://doi.org/10.1023/A:10073796067
 | mimic3-benchmarks   | https://github.com/YerevaNN/mimic3-benchmarks    | MIT                   |
 | MOCHA code          | https://github.com/gingsmith/fmtl                | Apache 2.0            |
 | FedProx code        | https://github.com/litian96/FedProx              | Apache 2.0            |
-| pFedMe code         | https://github.com/CharlieDinh/pFedMe            | MIT                   |
 | PyVertical          | https://github.com/OpenMined/PyVertical          | Apache 2.0            |
 | Opacus (DP-SGD)     | https://github.com/pytorch/opacus                | Apache 2.0            |
 | FL-bench            | https://github.com/KarhouTam/FL-bench            | GPL-2.0               |
 | MARS-VFL code       | https://github.com/shentt67/MARS-VFL             | See repo              |
                         
 ---
-
-*Document compiled: March 2026.*
-*Papers grounded in literature verified against published DOIs and public repositories.*
+*Papers grounded in literature verified against published DOIs  and public repositories.*

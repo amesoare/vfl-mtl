@@ -20,9 +20,9 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-TASKS  = ["ihm_loss", "los_loss", "pheno_loss"]
-LABELS = ["IHM",      "LOS",      "Pheno"]
-COLORS = ["#fbb45e",  "#afc4d5",  "#353b56"]
+TASKS  = ["ihm_loss", "decomp_loss", "pheno_loss"]
+LABELS = ["IHM",      "Decomp",      "Pheno"]
+COLORS = ["#9d7b78", "#3d3527", "#2f4a6d"]
 
 
 def main():

@@ -36,7 +36,7 @@ Processing per stay:
 
 Output (written to --output directory):
   site_A_vitals.csv      — stay, subject_id, split, [7 features], y_ihm
-  site_B_labs.csv        — stay, subject_id, split, [6 features], y_los
+  site_B_labs.csv        — stay, subject_id, split, [6 features], y_decomp
   site_C_composite.csv   — stay, subject_id, split, [4 features], [25 pheno labels]
 
 Note: aligned_patient_ids.csv is produced by a separate step:
@@ -95,7 +95,7 @@ assert len(set(SITE_B_FEATURES) & set(SITE_C_FEATURES)) == 0
 
 TASK_DIRS = {
     "ihm":   "in-hospital-mortality",
-    "los":   "length-of-stay",
+    "decomp": "decompensation",
     "pheno": "phenotyping",
 }
 
@@ -255,14 +255,14 @@ def build_site_a(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataF
 
 def build_site_b(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataFrame:
     """
-    Build site_B_labs.csv from length-of-stay listfiles.
+    Build site_B_labs.csv from decompensation listfiles.
 
-    LOS listfiles have multiple rows per stay (hourly prediction targets).
-    Label: y_los = total ICU stay length in hours = period_length + y_true
-    (this quantity is constant across all hourly rows for the same stay).
+    Decompensation listfiles have multiple rows per stay (one per hourly prediction
+    window). Label: y_decomp = max(y_true) across all hourly rows for the stay
+    (1 if the patient ever faced an imminent decompensation event, 0 otherwise).
     """
-    task_dir = root / TASK_DIRS["los"]
-    print("Building Site B (labs → LOS) ...")
+    task_dir = root / TASK_DIRS["decomp"]
+    print("Building Site B (labs → Decompensation) ...")
 
     all_frames = []
     train_means = None
@@ -271,9 +271,8 @@ def build_site_b(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataF
         print(f"  [{split}]")
         lf = pd.read_csv(task_dir / f"{split}_listfile.csv")
 
-        # Compute total LOS (constant per stay) and deduplicate to one row per stay
-        lf["y_los"] = lf["period_length"] + lf["y_true"]
-        lf_dedup = lf.drop_duplicates("stay").set_index("stay")
+        # Per-stay decompensation label: 1 if any hourly y_true == 1, else 0
+        lf_dedup = lf.groupby("stay")["y_true"].max().rename("y_decomp")
         unique_stays = pd.Series(lf_dedup.index.tolist())
 
         agg = aggregate_stays(task_dir, unique_stays, split, SITE_B_FEATURES,
@@ -283,7 +282,7 @@ def build_site_b(root: Path, output: Path, clip_bounds: dict = None) -> pd.DataF
             for col in SITE_B_FEATURES:
                 agg[col] = agg[col].fillna(train_means.get(col, 0.0))
 
-        agg["y_los"] = lf_dedup["y_los"].reindex(agg["stay"].values).values
+        agg["y_decomp"] = lf_dedup.reindex(agg["stay"].values).values
         agg["split"] = split
         all_frames.append(agg)
 

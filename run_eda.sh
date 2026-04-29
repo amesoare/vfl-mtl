@@ -1,23 +1,20 @@
 #!/bin/bash
 #SBATCH --job-name=eda_notebook
 #SBATCH --partition=rome
-#SBATCH --time=01:00:00
+#SBATCH --time=00:20:00
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=28G
 #SBATCH --output=/home/asoare/vfl_mlt/slurm-%j.out
 #SBATCH --error=/home/asoare/vfl_mlt/slurm-%j.err
 
 set -euo pipefail
 
-# --- Activate conda environment ---
-module load 2023
-module load Anaconda3/2023.07-2
-source activate vfl_mlt_env
+# --- Activate virtualenv ---
+source /home/asoare/vfl_mlt/.venv/bin/activate
 
 NOTEBOOK=/home/asoare/vfl_mlt/ExploratoryDataAnalysis.ipynb
 OUTDIR=/home/asoare/vfl_mlt/results/eda
-EXECUTED=$OUTDIR/EDA_executed.ipynb
 HTML=$OUTDIR/EDA_report.html
 
 mkdir -p "$OUTDIR"
@@ -30,13 +27,14 @@ echo "[$(date)] Executing notebook..."
 jupyter nbconvert \
     --to notebook \
     --execute "$NOTEBOOK" \
-    --output "$EXECUTED" \
+    --output "$NOTEBOOK" \
+    --inplace \
     --ExecutePreprocessor.timeout=3600
 
 echo "[$(date)] Converting to HTML..."
 jupyter nbconvert \
     --to html \
-    "$EXECUTED" \
+    "$NOTEBOOK" \
     --output "$HTML"
 
 echo "[$(date)] Done. Report saved to: $HTML"

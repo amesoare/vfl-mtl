@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-COLORS = ["#afc4d5", "#7d7585"]
+COLORS = ["#3d3527", "#b8c7d6"]
 
 
 def main():

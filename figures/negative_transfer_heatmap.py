@@ -30,7 +30,7 @@ def build_delta_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """
     final    = df.groupby(["task_config", "seed"]).last().reset_index()
     baseline = final[final["task_config"] == "ihm_only"].set_index("seed")
-    metrics  = ["ihm_loss", "los_loss", "pheno_loss"]
+    metrics  = ["ihm_loss", "decomp_loss", "pheno_loss"]
     configs  = [c for c in final["task_config"].unique() if c != "ihm_only"]
 
     rows = []
@@ -59,7 +59,7 @@ def main():
         delta_df,
         annot=True, fmt=".3f", center=0,
         cmap="RdYlGn", linewidths=0.5, ax=ax,
-        xticklabels=["IHM Loss", "LOS Loss", "Pheno Loss"],
+        xticklabels=["IHM Loss", "Decomp Loss", "Pheno Loss"],
     )
     ax.set_title("Loss Reduction vs. IHM-only Baseline\n(positive = MTL helps, negative = transfer hurts)")
     ax.set_xlabel("Task Loss")

@@ -114,11 +114,11 @@ def check_label_balance(
     tol: float = 0.03,
 ) -> bool:
     """
-    Returns True if IHM rate, LOS bin distribution, and per-phenotype prevalence
+    Returns True if IHM rate, Decompensation label balance, and per-phenotype prevalence
     are all within `tol` of the train distribution in val and test splits.
     """
     a_labels = site_a[["subject_id", "y_ihm"]].drop_duplicates(subset="subject_id")
-    b_labels = site_b[["subject_id", "y_los"]].drop_duplicates(subset="subject_id")
+    b_labels = site_b[["subject_id", "y_decomp"]].drop_duplicates(subset="subject_id")
     c_labels = site_c[["subject_id"] + pheno_cols].drop_duplicates(subset="subject_id")
 
     merged = (
@@ -158,7 +158,7 @@ def stratify_aligned_cohort(
 ) -> pd.DataFrame:
     """
     Re-assigns train/val/test within the aligned cohort using iterative stratification
-    across all label signals: IHM (binary), LOS bins (10-class one-hot), phenotypes (25 binary).
+    across all label signals: IHM (binary), Decompensation (binary), phenotypes (25 binary).
     Returns updated aligned_ids DataFrame with new 'split' column.
     """
     from skmultilearn.model_selection import IterativeStratification
@@ -166,7 +166,7 @@ def stratify_aligned_cohort(
     # Deduplicate per subject_id — site CSVs have one row per stay (multiple stays
     # per subject are possible). Take first occurrence for stratification purposes.
     a_labels = site_a[["subject_id", "y_ihm"]].drop_duplicates(subset="subject_id")
-    b_labels = site_b[["subject_id", "y_los"]].drop_duplicates(subset="subject_id")
+    b_labels = site_b[["subject_id", "y_decomp"]].drop_duplicates(subset="subject_id")
     c_labels = site_c[["subject_id"] + pheno_cols].drop_duplicates(subset="subject_id")
 
     merged = (
@@ -176,10 +176,9 @@ def stratify_aligned_cohort(
         .merge(c_labels, on="subject_id", how="left")
     )
 
-    # Combined label matrix: y_ihm | LOS bins (one-hot) | 25 phenotypes
-    los_bins = pd.get_dummies(merged["y_los"].round().astype(int), prefix="los")
+    # Combined label matrix: y_ihm | y_decomp (binary) | 25 phenotypes
     label_matrix = pd.concat(
-        [merged[["y_ihm"]], los_bins, merged[pheno_cols]], axis=1
+        [merged[["y_ihm", "y_decomp"]], merged[pheno_cols]], axis=1
     ).fillna(0).astype(float).to_numpy()
 
     ids = merged["subject_id"].to_numpy()
@@ -259,10 +258,12 @@ def main():
         aligned, site_dfs["site_a"], site_dfs["site_b"], site_dfs["site_c"], pheno_cols
     )
     if not balanced:
-        print("  Label imbalance detected — re-assigning splits with iterative stratification ...")
-        aligned = stratify_aligned_cohort(
-            aligned, site_dfs["site_a"], site_dfs["site_b"], site_dfs["site_c"], pheno_cols
-        )
+        # Stratification would reassign subjects to splits inconsistent with the site CSVs,
+        # causing near-zero overlap in VFLSiteDataset (which filters by split in BOTH files).
+        # YerevaNN's original splits are already reasonable; minor imbalance is acceptable.
+        print("  WARNING: label imbalance exceeds tolerance but splits are NOT re-assigned.")
+        print("  Stratification would break site CSV ↔ aligned_patient_ids.csv split consistency.")
+        print("  Keeping inherited YerevaNN splits.")
     else:
         print("  Label balance OK — keeping inherited YerevaNN splits.")
 

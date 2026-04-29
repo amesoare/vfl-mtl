@@ -22,7 +22,7 @@ import pandas as pd
 NON_FEATURE_COLS = {
     "stay", "subject_id", "split",
     # task labels
-    "y_ihm", "y_los",
+    "y_ihm", "y_decomp",
     # phenotyping labels (25 ICD groups)
     "Acute and unspecified renal failure",
     "Acute cerebrovascular disease",
@@ -60,7 +60,7 @@ TASKS = [
 
 SITE_CSVS = {
     "site_A_vitals.csv": "y_ihm",
-    "site_B_labs.csv": "y_los",
+    "site_B_labs.csv": "y_decomp",
     "site_C_composite.csv": None,  # phenotyping — multi-label, checked separately
 }
 
@@ -131,6 +131,42 @@ def verify(root: Path) -> bool:
         print(f"  ✗ aligned_patient_ids.csv not found — skipping count check")
         results.append(False)
 
+    # ── 3b. Subject ID overlap: aligned_patient_ids ↔ site CSVs ─────────────
+    # Critical: VFLSiteDataset filters by split in BOTH aligned_patient_ids.csv
+    # AND the site CSV. If the split assignments differ (e.g. after stratification),
+    # the intersection can collapse to near-zero — silently producing tiny datasets.
+    print("\n[ 3b ] Subject ID overlap (aligned_patient_ids ↔ site CSVs)")
+    MIN_OVERLAP_FRAC = 0.80  # at least 80% of aligned val/test must appear in each site CSV
+    if aligned_path.exists():
+        aligned_df = pd.read_csv(aligned_path)
+        site_csv_paths = {
+            "A": splits_dir / "site_A_vitals.csv",
+            "B": splits_dir / "site_B_labs.csv",
+            "C": splits_dir / "site_C_composite.csv",
+        }
+        for sp in ["val", "test"]:
+            aligned_ids_sp = set(aligned_df.loc[aligned_df["split"] == sp, "subject_id"])
+            for site, spath in site_csv_paths.items():
+                if not spath.exists():
+                    continue
+                site_df_sp = pd.read_csv(spath, usecols=["subject_id", "split"])
+                site_ids_sp = set(site_df_sp.loc[site_df_sp["split"] == sp, "subject_id"])
+                if not aligned_ids_sp:
+                    continue
+                overlap_frac = len(aligned_ids_sp & site_ids_sp) / len(aligned_ids_sp)
+                check(
+                    overlap_frac >= MIN_OVERLAP_FRAC,
+                    f"Split '{sp}' site {site}: {overlap_frac:.1%} of aligned IDs present in site CSV",
+                    f"Split '{sp}' site {site}: only {overlap_frac:.1%} of aligned IDs in site CSV "
+                    f"(aligned has {len(aligned_ids_sp):,}, site has {len(site_ids_sp):,}, "
+                    f"overlap={len(aligned_ids_sp & site_ids_sp):,}) — "
+                    f"run psi_alignment.py to regenerate aligned_patient_ids.csv",
+                    results,
+                )
+    else:
+        print("  ✗ aligned_patient_ids.csv not found — skipping overlap check")
+        results.append(False)
+
     # ── 4. No feature column overlap between site CSVs ────────────────────
     print("\n[ 4 ] Feature column overlap between sites")
     site_feature_sets: dict[str, set] = {}
@@ -176,19 +212,16 @@ def verify(root: Path) -> bool:
             results,
         )
 
-    # 5b. Length-of-stay (continuous regression — report median & range)
+    # 5b. Decompensation (binary — check positive rate is plausible 5–50 %)
     site_b = splits_dir / "site_B_labs.csv"
     if site_b.exists():
-        df_b = pd.read_csv(site_b, usecols=["y_los", "split"])
-        train_b = df_b[df_b["split"] == "train"]["y_los"]
-        median_los = train_b.median()
-        los_min, los_max = train_b.min(), train_b.max()
-        reasonable = los_min >= 0 and los_max <= 30 * 24  # hours, max 30 days
+        df_b = pd.read_csv(site_b, usecols=["y_decomp", "split"])
+        train_b = df_b[df_b["split"] == "train"]["y_decomp"]
+        pos_rate_b = train_b.mean()
         check(
-            reasonable,
-            f"LOS (train): median={median_los:.1f}h, range=[{los_min:.1f}, {los_max:.1f}]h",
-            f"LOS (train): implausible values — median={median_los:.1f}h, "
-            f"range=[{los_min:.1f}, {los_max:.1f}]h",
+            0.05 <= pos_rate_b <= 0.50,
+            f"Decompensation positive rate (train): {pos_rate_b:.1%}  [5%–50% acceptable]",
+            f"Decompensation positive rate (train): {pos_rate_b:.1%}  OUT OF RANGE [5%–50%]",
             results,
         )
 

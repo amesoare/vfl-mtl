@@ -48,13 +48,15 @@ SPLIT_CONFIGS = {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--splits_dir",    default="data/vertical_splits")
-    parser.add_argument("--n_rounds",      type=int, default=50)
+    parser.add_argument("--n_rounds",      type=int, default=100)
     parser.add_argument("--batch_size",    type=int, default=64)
-    parser.add_argument("--device",        default="cpu")
+    parser.add_argument("--device",        default="cuda" if __import__("torch").cuda.is_available() else "cpu")
     parser.add_argument("--output",        default="results/exp2.csv")
     parser.add_argument("--use_synthetic", action="store_true",
                         help="Use random synthetic data (smoke test, no real data needed)")
     parser.add_argument("--n_synthetic",   type=int, default=256)
+    parser.add_argument("--patience",      type=int, default=15,
+                        help="Early stopping patience in rounds (0 = disabled)")
     args = parser.parse_args()
 
     all_rows = []
@@ -70,10 +72,11 @@ def main():
                 seed=seed,
                 use_fedavg=True,
                 fedavg_every=5,
-                task_weights={"ihm": 1.0, "los": 1.0, "pheno": 1.0},
+                task_weights={"ihm": 1.0, "decomp": 1.0, "pheno": 1.0},
                 site_input_dims=dims,
                 use_synthetic=args.use_synthetic,
                 n_synthetic=args.n_synthetic,
+                patience=args.patience,
             )
             results = run_training(cfg)
             for r in results:

@@ -12,3 +12,11 @@ data/
 slurm-*.out
 slurm-*.err
 mimic3-benchmarks/
+checkpoints/
+*.pt
+snellius_best_practices.pdf
+Exercise 4.md
+Exercise Session 4 - Visual Overview Methodology.htm
+docs/ThesisDesign_AmeliaSoare copy.pdf
+baselines/MARS-VFL/
+baselines/mars_vfl/
