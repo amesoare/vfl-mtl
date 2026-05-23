@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=18
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu_a100
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=56G
 #SBATCH --job-name=vfl_central
 #SBATCH --mail-type=FAIL,TIME_LIMIT

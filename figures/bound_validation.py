@@ -28,6 +28,19 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+plt.rcParams.update({
+    "figure.dpi":        150,
+    "font.size":         11,
+    "font.family":       "serif",
+    "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
+    "axes.titlesize":    12,
+    "axes.titleweight":  "normal",
+    "axes.labelsize":    11,
+    "xtick.labelsize":   10,
+    "ytick.labelsize":   10,
+    "legend.fontsize":   10,
+})
+
 # Brand palette — matches plot_results_summary.py
 _C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d"]
 
@@ -74,14 +87,15 @@ def main():
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="Chance (0.5)")
 
     ax.set_xticks(range(len(EPS_DISPLAY_ORDER)))
-    ax.set_xticklabels(EPS_LABELS, fontsize=8)
-    ax.set_xlabel("Privacy budget ε  (high privacy → low privacy)", fontsize=8)
-    ax.set_ylabel("Label Inference AUC", fontsize=8)
-    ax.set_title("Multi-Task Label Inference Bound vs. Empirical Attack AUC",
-                 fontsize=9, fontweight="bold")
+    ax.set_xticklabels(EPS_LABELS)
+    ax.set_xlabel("Privacy budget ε")
+    ax.set_ylabel("Label Inference AUC")
+    ax.set_title("Theoretical label inference bound vs. empirical attack AUC across privacy budgets")
     ax.set_ylim(0.45, 1.05)
-    ax.legend(fontsize=7, loc="upper left", ncol=2)
+    ax.legend(loc="upper right", ncol=2)
     ax.grid(True, alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     fig.tight_layout()
     out = Path(args.output)

@@ -243,12 +243,14 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
             no_improve = 0
             if ckpt_dir is not None:
                 Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
+                ckpt_path = Path(ckpt_dir) / f"best_centralized_seed{seed}.pt"
                 torch.save(
                     {"encoder": encoder.state_dict(),
                      "mmoe":    mmoe.state_dict(),
                      "seed": seed, "hidden_dim": hidden_dim},
-                    Path(ckpt_dir) / f"best_centralized_seed{seed}.pt",
+                    ckpt_path,
                 )
+                print(f"  [ckpt] saved → {ckpt_path}  (score={score:.4f})")
         else:
             no_improve += 1
 

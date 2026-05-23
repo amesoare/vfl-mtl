@@ -33,6 +33,14 @@ python experiments/run_exp1.py \
     --use_synthetic \
     --output results/test_exp1.csv
 
+echo "--- Smoke test: Exp 2 ---"
+python experiments/run_exp2.py \
+    --splits_dir $SPLITS_DIR \
+    --n_rounds 3 \
+    --device cuda \
+    --use_synthetic \
+    --output results/test_exp2.csv
+
 echo "--- Smoke test: Exp 3 ---"
 python experiments/run_exp3.py \
     --splits_dir $SPLITS_DIR \
@@ -40,14 +48,6 @@ python experiments/run_exp3.py \
     --device cuda \
     --use_synthetic \
     --output results/test_exp3.csv
-
-echo "--- Smoke test: Exp 4 ---"
-python experiments/run_exp4.py \
-    --splits_dir $SPLITS_DIR \
-    --n_rounds 3 \
-    --device cuda \
-    --use_synthetic \
-    --output results/test_exp4.csv
 
 echo "--- Smoke test: Centralized ---"
 python baselines/centralized.py \

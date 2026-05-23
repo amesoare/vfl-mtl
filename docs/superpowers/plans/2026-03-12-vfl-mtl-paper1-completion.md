@@ -4000,11 +4000,13 @@ Output: `results/ablations.csv` with columns:
 
 | File | Status | Question answered |
 |---|---|---|
-| `experiments/run_ablations.py` | - [ ] | Orchestrates all 5 ablations |
-| `model/mmoe.py` (flag: `use_mmoe`) | - [ ] | Is MMoE gating necessary? |
-| `model/mmoe.py` (flag: `uniform_gating`) | - [ ] | Does learned gating add over uniform? |
-| `data_prep/dataset.py` (flag: `random_align`) | - [ ] | What is the cost of proper PSI alignment? |
-| `results/ablations.csv` | - [ ] | Aggregated ablation results |
+| `experiments/run_ablations.py` | ✅ done | Orchestrates all ablations |
+| `model/mmoe.py` (flag: `use_mmoe`) | ✅ done | Is MMoE gating necessary? |
+| `model/mmoe.py` (flag: `uniform_gating`) | ✅ done | Does learned gating add over uniform? |
+| `data_prep/dataset.py` (flag: `random_align`) | ✗ not run | PSI cannot be disabled without re-preprocessing MIMIC |
+| `results/ablations.csv` | ✅ real MIMIC, 3 seeds | Val metrics from training (7 variants) |
+| `experiments/evaluate_ablations.py` | ✅ done | Test-set inference from best checkpoints |
+| `results/test_ablations.csv` | ✅ real MIMIC, 3 seeds | Final test-set ablation numbers |
 
 ---
 
@@ -4018,11 +4020,15 @@ Before claiming Paper 1 implementation is complete:
 - [x] All figure scripts runnable on dummy CSV: `python figures/scalability_curves.py`
 - [x] `git log --oneline` shows one commit per task
 - [x] `requirements.txt` up to date
-- [ ] Ablation script smoke test: `python experiments/run_ablations.py --use_synthetic --n_rounds 2`
-- [ ] `results/ablations.csv` contains rows for: `abl_no_mmoe`, `abl_no_psi`, `abl_experts_2`,
-      `abl_experts_4`, `abl_experts_8`, `abl_uniform_gating`, `abl_embed_32`, `abl_embed_64`, `abl_embed_128`
-- [ ] All ablation Snellius runs complete
-- [ ] Ablation bar chart figure generated: `figures/plot_ablations.py`
+- [x] Ablation script smoke test: `python experiments/run_ablations.py --use_synthetic --n_rounds 2`
+- [x] `results/ablations.csv` contains rows for all variants (real MIMIC, 3 seeds each):
+      `VFL-MTL`, `abl_no_mmoe`, `abl_experts_2`, `abl_experts_8`, `abl_uniform_gating`,
+      `abl_embed_32`, `abl_embed_128`
+      Note: `abl_no_psi` not run — PSI alignment cannot be disabled without re-preprocessing MIMIC.
+      Note: `abl_embed_64` is the VFL-MTL default (already in exp1.csv), not a separate row.
+- [x] All ablation Snellius runs complete (real MIMIC, Snellius, 3 seeds)
+- [x] Ablation bar chart figure generated: `figures/plot_ablations.py` → `figures/ablations_test.png`
+- [x] Test-set evaluation for ablations: `experiments/evaluate_ablations.py` → `results/test_ablations.csv`
 
 ---
 

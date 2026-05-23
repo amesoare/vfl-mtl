@@ -18,8 +18,8 @@ Metrics:
 For each (epsilon_level, mode, seed) in results/privacy_utility.csv:
   1. Reconstruct model from TrainConfig defaults
   2. Load checkpoint from checkpoints/ (falls back to fresh model if absent)
-  3. Extract train + val embeddings via VFLClient.eval_forward()
-  4. Fit LogisticRegression probe; report metrics on val set
+  3. Extract train + test embeddings via VFLClient.eval_forward()
+  4. Fit LogisticRegression probe; report metrics on test set
 
 Output: results/label_inference.csv
   columns: epsilon_level, mode, seed, task, accuracy, auroc
@@ -54,7 +54,7 @@ from train import make_synthetic_loaders
 # Constants matching privacy_utility_curves.py
 # ---------------------------------------------------------------------------
 
-SEEDS         = [42, 123, 7, 17, 99]
+SEEDS         = [42, 123, 7]
 EPSILON_LEVELS = ["inf", "10.0", "5.0", "2.0", "1.0", "0.5"]
 EMBED_DIM     = 64
 SITE_INPUT_DIMS = {"A": 7, "B": 4, "C": 3}
@@ -65,6 +65,8 @@ SITE_INPUT_DIMS = {"A": 7, "B": 4, "C": 3}
 # ---------------------------------------------------------------------------
 
 def _ckpt_path(ckpt_dir: str, eps_label: str, mode: str, seed: int) -> Path:
+    if str(eps_label) == "inf":
+        return Path(ckpt_dir) / f"best_VFL-MTL_seed{seed}.pt"
     if mode == "stratified":
         model_name = f"DP-stratified-eps5-seed{seed}"
     else:
@@ -200,6 +202,7 @@ def _run_one(
     max_seq_len: int,
     splits_dir: str,
     device: torch.device,
+    split: str = "test",
 ) -> list[dict]:
     """
     Extract embeddings for one (eps_label, mode, seed) config and run attack.
@@ -218,19 +221,19 @@ def _run_one(
     # Data
     if use_synthetic:
         n_tr = max(1, n_synthetic // batch_size)
-        n_val = max(1, n_tr // 4)
+        n_te = max(1, n_tr // 4)
         train_loaders = make_synthetic_loaders(batch_size, max_seq_len, n_tr)
-        val_loaders   = make_synthetic_loaders(batch_size, max_seq_len, n_val)
+        eval_loaders  = make_synthetic_loaders(batch_size, max_seq_len, n_te)
     else:
         from data_prep.dataset import build_site_loaders
         project_root = Path(splits_dir).parents[1]
         train_loaders = build_site_loaders(project_root, "train", batch_size)
-        val_loaders   = build_site_loaders(project_root, "val",   batch_size)
+        eval_loaders  = build_site_loaders(project_root, split,   batch_size)
 
     z_train, y_train = _extract_embeddings(clients, train_loaders, device)
-    z_val,   y_val   = _extract_embeddings(clients, val_loaders,   device)
+    z_eval,  y_eval  = _extract_embeddings(clients, eval_loaders,  device)
 
-    task_rows = run_label_inference(z_train, y_train, z_val, y_val)
+    task_rows = run_label_inference(z_train, y_train, z_eval, y_eval)
     for r in task_rows:
         r.update({"epsilon_level": eps_label, "mode": mode, "seed": seed})
     return task_rows
@@ -255,6 +258,8 @@ def main() -> None:
                         help="Used only for checkpoint path reconstruction")
     parser.add_argument("--batch_size",    type=int, default=64)
     parser.add_argument("--max_seq_len",   type=int, default=48)
+    parser.add_argument("--split",         default="test", choices=["val", "test"],
+                        help="Which held-out split to evaluate the probe on.")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -291,6 +296,7 @@ def main() -> None:
                     max_seq_len=args.max_seq_len,
                     splits_dir=args.splits_dir,
                     device=device,
+                    split=args.split,
                 )
                 all_rows.extend(rows)
             except Exception as e:

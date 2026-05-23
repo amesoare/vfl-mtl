@@ -250,7 +250,7 @@ def main():
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
     fig.suptitle(
-        f"VFL-MTL — Test-set Confusion Matrices  (threshold={args.threshold})",
+        f"PRISM — Test-set Confusion Matrices  (threshold={args.threshold})",
         fontsize=12, fontweight="bold", y=1.02,
     )
 

@@ -20,7 +20,7 @@ REMOTE_DIR="/home/$USERNAME/vfl_mlt"
 
 echo "[$(date)] Syncing results from $REMOTE:$REMOTE_DIR ..."
 
-# Pull back: results/, slurm logs — never data/
+# Pull back: results/, executed notebook, slurm logs — never data/
 SSHPASS="$SNELLIUS_PASSWORD" sshpass -e rsync -avz --progress \
     -e "ssh -o StrictHostKeyChecking=no" \
     --exclude='data/' \
@@ -29,6 +29,7 @@ SSHPASS="$SNELLIUS_PASSWORD" sshpass -e rsync -avz --progress \
     --exclude='*.pyc' \
     --exclude='.DS_Store' \
     --filter='+ results/***' \
+    --filter='+ ExploratoryDataAnalysis.ipynb' \
     --filter='+ slurm-*.out' \
     --filter='+ slurm-*.err' \
     --filter='- *' \
@@ -37,3 +38,4 @@ SSHPASS="$SNELLIUS_PASSWORD" sshpass -e rsync -avz --progress \
 
 echo "[$(date)] Sync complete."
 echo "Results saved to: $SCRIPT_DIR/results/"
+echo "Executed notebook: $SCRIPT_DIR/ExploratoryDataAnalysis.ipynb"

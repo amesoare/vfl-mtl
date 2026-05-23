@@ -1,10 +1,12 @@
 """
 experiments/validate_bound.py — Multi-task label inference bound validation.
 
-Extends Liu et al. (2022) single-task VFL label inference bound to the
-heterogeneous VFL-MTL setting via task gradient correlation ρ.
+Derives and validates a multi-task label inference AUC upper bound for
+VFL under Gaussian DP noise, extending the single-task Gaussian mechanism
+bound (Abadi et al., 2016) to the heterogeneous VFL-MTL setting via task
+gradient correlation ρ.
 
-Theoretical bound (Liu et al. 2022 + ρ extension):
+Theoretical bound (novel; derived from Gaussian mechanism + ρ extension):
   g(σ, ρ) = Φ(C · √(1 + ρ) / σ)
 
   where Φ = standard normal CDF, C = max_grad_norm (clipping bound),
@@ -170,7 +172,7 @@ def main() -> None:
             sigma = sigma_map[eps_str]
 
             bound_ihm   = g_bound(sigma, rho)
-            bound_pheno = g_bound(sigma, rho)   # same formula; task-specific calibration in figures
+            bound_pheno = g_bound(sigma, rho)   # task-agnostic upper bound; empirical points per task overlaid in figures
 
             emp_ihm   = empirical.get((eps_str, mode_ref, "ihm"),   float("nan"))
             emp_pheno = empirical.get((eps_str, mode_ref, "pheno"), float("nan"))

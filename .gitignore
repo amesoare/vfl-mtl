@@ -15,8 +15,19 @@ mimic3-benchmarks/
 checkpoints/
 *.pt
 snellius_best_practices.pdf
-Exercise 4.md
-Exercise Session 4 - Visual Overview Methodology.htm
 docs/ThesisDesign_AmeliaSoare copy.pdf
+*.pdf
+# md files — only CLAUDE.md and the two implementation plans are tracked
+docs/methodology_paper1.md
+docs/references.bib
+docs/introduction_relatedwork.md
+docs/methodology_text.md
+docs/results_discussion_txt.md
+docs/suggestions.md
+docs/MethodologyExample.md
+figures/titles.md
+task_plan.md
+MIMIC3_data_aggreement.md
+PCMUmetric.md
 baselines/MARS-VFL/
 baselines/mars_vfl/

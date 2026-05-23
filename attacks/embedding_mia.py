@@ -8,7 +8,7 @@ Threat model (honest-but-curious server):
 
 Attack (consistent with Weng et al. 2021, Luo et al. CCS 2021):
   - Members:     80% of training-set embeddings (train the attack classifier)
-  - Non-members: 80% of validation-set embeddings (balanced sample)
+  - Non-members: 80% of test-set embeddings (balanced sample)
   - Hold-out 20% of each for evaluation
   - Binary logistic regression: input = z_concat (B, 3 × embed_dim)
   - Target under sufficient DP: attack AUC ≈ 0.50
@@ -49,7 +49,7 @@ from train import make_synthetic_loaders
 # Constants matching privacy_utility_curves.py
 # ---------------------------------------------------------------------------
 
-SEEDS           = [42, 123, 7, 17, 99]
+SEEDS           = [42, 123, 7]
 EPSILON_LEVELS  = ["inf", "10.0", "5.0", "2.0", "1.0", "0.5"]
 EMBED_DIM       = 64
 SITE_INPUT_DIMS = {"A": 7, "B": 4, "C": 3}
@@ -60,6 +60,8 @@ SITE_INPUT_DIMS = {"A": 7, "B": 4, "C": 3}
 # ---------------------------------------------------------------------------
 
 def _ckpt_path(ckpt_dir: str, eps_label: str, mode: str, seed: int) -> Path:
+    if str(eps_label) == "inf":
+        return Path(ckpt_dir) / f"best_VFL-MTL_seed{seed}.pt"
     if mode == "stratified":
         model_name = f"DP-stratified-eps5-seed{seed}"
     else:
@@ -180,6 +182,7 @@ def _run_one(
     max_seq_len: int,
     splits_dir: str,
     device: torch.device,
+    split: str = "test",
 ) -> dict:
     torch.manual_seed(seed)
     clients, server = _build_clients_and_server(device)
@@ -191,18 +194,18 @@ def _run_one(
         print(f"  [embedding_mia] WARNING: checkpoint not found: {ckpt}")
 
     if use_synthetic:
-        n_tr  = max(1, n_synthetic // batch_size)
-        n_val = max(1, n_tr // 4)
+        n_tr = max(1, n_synthetic // batch_size)
+        n_te = max(1, n_tr // 4)
         train_loaders = make_synthetic_loaders(batch_size, max_seq_len, n_tr)
-        val_loaders   = make_synthetic_loaders(batch_size, max_seq_len, n_val)
+        test_loaders  = make_synthetic_loaders(batch_size, max_seq_len, n_te)
     else:
         from data_prep.dataset import build_site_loaders
         project_root = Path(splits_dir).parents[1]
         train_loaders = build_site_loaders(project_root, "train", batch_size)
-        val_loaders   = build_site_loaders(project_root, "val",   batch_size)
+        test_loaders  = build_site_loaders(project_root, split,   batch_size)
 
     z_members    = _extract_concat_embeddings(clients, train_loaders, device)
-    z_nonmembers = _extract_concat_embeddings(clients, val_loaders,   device)
+    z_nonmembers = _extract_concat_embeddings(clients, test_loaders,  device)
 
     metrics = run_mia(z_members, z_nonmembers, random_state=seed)
     metrics.update({"epsilon_level": eps_label, "mode": mode, "seed": seed})
@@ -225,6 +228,8 @@ def main() -> None:
     parser.add_argument("--n_synthetic",   type=int, default=256)
     parser.add_argument("--batch_size",    type=int, default=64)
     parser.add_argument("--max_seq_len",   type=int, default=48)
+    parser.add_argument("--split",         default="test", choices=["val", "test"],
+                        help="Which held-out split to use as non-members.")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -258,6 +263,7 @@ def main() -> None:
                     max_seq_len=args.max_seq_len,
                     splits_dir=args.splits_dir,
                     device=device,
+                    split=args.split,
                 )
                 all_rows.append(row)
             except Exception as e:

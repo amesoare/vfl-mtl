@@ -5,9 +5,10 @@ In VFL the server returns per-sample embedding gradients to each client:
   grad[i] = ∂L/∂z_i  shape (B, embed_dim)
 
 Privacy is protected by applying DP noise at the cut layer before the
-client uses those gradients for local backpropagation. This prevents
-passive clients from inferring active-party labels via gradient inversion
-(Fu et al. 2022, Liu et al. 2022).
+client uses those gradients for local backpropagation. This reduces label
+leakage via cut-layer embeddings by adding DP noise to the encoder's gradient
+updates (McMahan et al. 2018), making embeddings less label-informative and
+reducing linear-probe and MIA attack success (Weng et al. 2021, Luo et al. 2021).
 
 DPVFLClient subclasses VFLClient and overrides receive_gradient() to
 apply clip_and_noise() transparently — no changes needed to the training
@@ -91,6 +92,11 @@ class AdaptiveDPSGD:
         Returns
         -------
         (B, embed_dim) — clipped and noised gradient (same device as input)
+
+        Note: the server returns the MEAN gradient ∂L/∂z = (1/B)·Σ ∂L_i/∂z_i,
+        so each row has sensitivity C/B, not C.  Both the clipping bound and the
+        noise std are scaled by 1/B.  The noise-multiplier σ (= noise/sensitivity)
+        is unchanged, so Rényi-DP accounting via RenyiAccountant is unaffected.
         """
         sigma = self._sigma.get(task, 0.0)
         if sigma == 0.0:
@@ -98,13 +104,16 @@ class AdaptiveDPSGD:
 
         B = grad.shape[0]
 
-        # Per-sample L2 norm clipping
-        norms = grad.norm(2, dim=-1, keepdim=True)          # (B, 1)
-        scale = (self.max_grad_norm / (norms + 1e-8)).clamp(max=1.0)
-        clipped = grad * scale                               # (B, embed_dim)
+        # Effective per-row sensitivity: C/B (rows are batch-averaged gradients)
+        effective_C = self.max_grad_norm / B
 
-        # Gaussian noise — std = σ·C/√B so that sum has std = σ·C (Abadi et al. 2016)
-        noise_std = sigma * self.max_grad_norm / (B ** 0.5)
+        # Per-sample L2 norm clipping to effective_C
+        norms = grad.norm(2, dim=-1, keepdim=True)                    # (B, 1)
+        scale = (effective_C / (norms + 1e-8)).clamp(max=1.0)
+        clipped = grad * scale                                         # (B, embed_dim)
+
+        # Gaussian noise: std = σ·(C/B)/√B → summed-row noise std = σ·(C/B)
+        noise_std = sigma * effective_C / (B ** 0.5)
         noise = torch.randn_like(clipped) * noise_std
         return clipped + noise
 

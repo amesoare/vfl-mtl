@@ -14,10 +14,6 @@ Ablations covered:
   abl_embed_32         : Abl 5 — embed_dim=32  (less communication, less capacity)
   abl_embed_64         : Abl 5 — embed_dim=64  (matches VFL-MTL default; sanity check)
   abl_embed_128        : Abl 5 — embed_dim=128 (more capacity, more communication)
-  abl_fedprox_001      : Abl 6 — FedProx mu=0.01 vs FedAvg aggregation
-  abl_fedprox_01       : Abl 6 — FedProx mu=0.1
-  abl_fedprox_1        : Abl 6 — FedProx mu=1.0
-
 Not covered here (handled in exp1.csv):
   ST-IHM / ST-Decomp / ST-Pheno — MTL contribution ablation
 
@@ -88,19 +84,6 @@ CONFIGS = {
         "embed_dim": 128,
     },
 
-    # ---- Abl 6: FedProx aggregation vs FedAvg ----
-    "abl_fedprox_001": {
-        **_BASE,
-        "fedprox_mu": 0.01,
-    },
-    "abl_fedprox_01": {
-        **_BASE,
-        "fedprox_mu": 0.1,
-    },
-    "abl_fedprox_1": {
-        **_BASE,
-        "fedprox_mu": 1.0,
-    },
 }
 
 

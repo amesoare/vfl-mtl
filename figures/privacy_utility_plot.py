@@ -26,14 +26,32 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+plt.rcParams.update({
+    "figure.dpi":        150,
+    "font.size":         11,
+    "font.family":       "serif",
+    "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
+    "axes.titlesize":    12,
+    "axes.titleweight":  "normal",
+    "axes.labelsize":    11,
+    "xtick.labelsize":   10,
+    "ytick.labelsize":   10,
+    "legend.fontsize":   10,
+})
+
 # Brand palette — matches plot_results_summary.py
 _C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d"]
 
 CLINICAL_FLOORS = {"IHM": 0.75, "Decomp": 0.70, "Pheno": 0.65}
-TASK_COLS = {
+TASK_COLS_VAL = {
     "IHM":    "val_ihm_auroc",
     "Decomp": "val_decomp_auroc",
     "Pheno":  "val_pheno_macro_auroc",
+}
+TASK_COLS_TEST = {
+    "IHM":    "ihm_auroc",
+    "Decomp": "decomp_auroc",
+    "Pheno":  "pheno_macro_auroc",
 }
 EPS_ORDER  = [0.5, 1.0, 2.0, 5.0, 10.0, float("inf")]
 EPS_LABELS = ["0.5", "1", "2", "5", "10", "∞"]
@@ -65,18 +83,22 @@ def _find_eps_star(means: pd.Series, floor: float, mode: str) -> float | None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",  default="results/privacy_utility.csv")
+    parser.add_argument("--input",  default="results/privacy_utility_combined.csv")
     parser.add_argument("--output", default="figures/privacy_utility.png")
+    parser.add_argument("--test",   action="store_true",
+                        help="Use test-set column names (ihm_auroc etc.) instead of val_*")
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
     df["epsilon_level"] = pd.to_numeric(df["epsilon_level"], errors="coerce").fillna(float("inf"))
-    df = _last_round_per_seed(df)
+    if not args.test:
+        df = _last_round_per_seed(df)
 
+    TASK_COLS = TASK_COLS_TEST if args.test else TASK_COLS_VAL
     modes_present = df["mode"].unique().tolist()
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), sharey=False)
-    fig.suptitle("Privacy-Utility Curves (VFL-MTL)", fontsize=12, fontweight="bold")
+    fig.suptitle("AUC-ROC as a function of privacy budget ε per clinical prediction task", fontweight="normal")
 
     for ax, (task_name, task_col) in zip(axes, TASK_COLS.items()):
         floor = CLINICAL_FLOORS[task_name]
@@ -97,8 +119,8 @@ def main():
                 except KeyError:
                     continue
 
-            # sentinel value for ∞ on linear x-axis
-            x_plot = [e if e != float("inf") else 20.0 for e in eps_vals]
+            # Evenly-spaced categorical positions so ε values are not bunched
+            x_plot = [EPS_ORDER.index(e) for e in eps_vals]
             mu_arr = np.array(mu_vals)
             sd_arr = np.array(sd_vals)
 
@@ -110,26 +132,25 @@ def main():
             # ε* marker
             eps_star = _find_eps_star(means, floor, mode)
             if eps_star is not None:
-                x_star = eps_star if eps_star != float("inf") else 20.0
-                y_star = means.loc[(mode, eps_star)]
-                ax.axvline(x_star, color=style["color"], ls=":", alpha=0.5, linewidth=1.0)
-                ax.annotate(f"ε*={EPS_LABELS[EPS_ORDER.index(eps_star)]}",
-                            xy=(x_star, y_star), xytext=(x_star + 0.3, y_star + 0.01),
-                            fontsize=7, color=style["color"])
+                x_star = EPS_ORDER.index(eps_star)
+                ax.axvline(x_star, color=style["color"], ls=":", alpha=0.6, linewidth=1.0)
+                ax.text(x_star, 1.02, f"ε*={EPS_LABELS[x_star]}",
+                        fontsize=11, color=style["color"], ha="center", va="top",
+                        bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))
 
-        # clinical floor reference line — matches existing style (#888888, lw=0.8)
         ax.axhline(floor, color="#888888", linestyle="--", linewidth=0.8,
                    label=f"Floor ({floor})")
 
-        x_ticks = [e if e != float("inf") else 20.0 for e in EPS_ORDER]
-        ax.set_xticks(x_ticks)
-        ax.set_xticklabels(EPS_LABELS, fontsize=8)
-        ax.set_xlabel("Privacy budget ε", fontsize=8)
-        ax.set_ylabel("Mean AUC-ROC", fontsize=8)
-        ax.set_title(task_name, fontsize=9, fontweight="bold")
+        ax.set_xticks(range(len(EPS_ORDER)))
+        ax.set_xticklabels(EPS_LABELS)
+        ax.set_xlabel("Privacy budget ε")
+        ax.set_ylabel("Mean AUC-ROC")
+        ax.set_title(task_name)
         ax.set_ylim(0.3, 1.05)
-        ax.legend(fontsize=7, loc="lower right")
+        ax.legend(fontsize=9, loc="lower right")
         ax.grid(True, alpha=0.3)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
     fig.tight_layout()
     out = Path(args.output)

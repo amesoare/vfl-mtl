@@ -172,9 +172,11 @@ class VFLServer:
             # Kendall et al. (2018): L = Σ_i [ exp(-s_i)/2 · L_i + s_i/2 ]
             # where s_i = log(σ_i²). Precision exp(-s_i) down-weights high-variance tasks;
             # s_i/2 regularises to prevent σ_i → ∞.
+            # Only include tasks with weight > 0 so zero-weight tasks are truly inactive.
             total_loss = sum(
                 0.5 * torch.exp(-self.log_vars[t]) * loss + 0.5 * self.log_vars[t]
                 for t, loss in task_losses.items()
+                if self.task_weights.get(t, 1.0) > 0
             )
         else:
             total_loss = sum(

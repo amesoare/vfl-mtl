@@ -45,7 +45,7 @@ from data_prep.dataset import build_site_loaders
 # Constants
 # ---------------------------------------------------------------------------
 
-SEEDS = [42, 123, 7, 17, 99]
+SEEDS = [42, 123, 7]
 DELTA = 1e-5
 MAX_GRAD_NORM = 1.0
 
@@ -153,7 +153,31 @@ def main() -> None:
     parser.add_argument("--n_synthetic",   type=int, default=256)
     parser.add_argument("--patience",      type=int, default=0,
                         help="Early stopping patience (0 = disabled for DP runs to ensure full sweep)")
+    parser.add_argument("--epsilon_levels", default=None,
+                        help="Comma-separated ε levels to run, e.g. 'inf' or '5.0' or '1.0,0.5'. "
+                             "Default: all levels. Use this to parallelise across Snellius jobs.")
+    parser.add_argument("--run_stratified", action="store_true",
+                        help="Also run the task-stratified variant (ε_total=5, σ_IHM<σ_Decomp<σ_Pheno). "
+                             "Pass alongside --epsilon_levels 5.0 for the ε=5 Snellius job.")
+    parser.add_argument("--num_workers", type=int, default=4,
+                        help="DataLoader worker processes. On Snellius with --cpus-per-task=18, "
+                             "set to 4 to use reserved CPUs for data loading (no extra SBU cost).")
     args = parser.parse_args()
+
+    # Filter ε levels if --epsilon_levels was provided
+    if args.epsilon_levels is not None:
+        _requested: list[float] = []
+        for _s in args.epsilon_levels.split(","):
+            _s = _s.strip()
+            _requested.append(float("inf") if _s == "inf" else float(_s))
+        epsilon_levels_to_run = [e for e in EPSILON_LEVELS if e in _requested]
+        if not epsilon_levels_to_run:
+            print(f"[privacy_curves] WARNING: none of {_requested} matched EPSILON_LEVELS={EPSILON_LEVELS}")
+    else:
+        epsilon_levels_to_run = EPSILON_LEVELS
+        if not args.run_stratified:
+            # Default: run everything (all levels + stratified) for backwards-compat
+            args.run_stratified = True
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,8 +195,8 @@ def main() -> None:
         decomp_pos_weight = (1.0 - pos_rate) / pos_rate
         print(f"[privacy_curves] decomp pos_weight={decomp_pos_weight:.1f}")
         prebuilt = {
-            "train": build_site_loaders(project_root, "train", args.batch_size),
-            "val":   build_site_loaders(project_root, "val",   args.batch_size),
+            "train": build_site_loaders(project_root, "train", args.batch_size, num_workers=args.num_workers),
+            "val":   build_site_loaders(project_root, "val",   args.batch_size, num_workers=args.num_workers),
             "decomp_pos_weight": decomp_pos_weight,
         }
 
@@ -229,13 +253,14 @@ def main() -> None:
         task_weights={"ihm": 1.0, "decomp": 1.0, "pheno": 1.0},
         uncertainty_weighting=True,
         eval_every=1,
+        grad_sim_every=5,
     )
 
     # ---- CSV writer (open once, stream rows) ----
     all_rows: list[dict] = []
 
     # ---- Uniform ε sweep ----
-    for eps in EPSILON_LEVELS:
+    for eps in epsilon_levels_to_run:
         sigma = sigma_for_eps.get(eps)
         privacy_cfg = _build_uniform_privacy_config(sigma)
         eps_label = _epsilon_label(eps)
@@ -256,7 +281,7 @@ def main() -> None:
             all_rows.extend(rows)
 
     # ---- Stratified run (ε_total=5) ----
-    if stratified_ok:
+    if stratified_ok and args.run_stratified:
         privacy_cfg_strat = _build_stratified_privacy_config(stratified_sigma)
         for seed in SEEDS:
             model_name = f"DP-stratified-eps5-seed{seed}"
@@ -271,6 +296,8 @@ def main() -> None:
             for r in rows:
                 r["seed"] = seed
             all_rows.extend(rows)
+    elif not args.run_stratified:
+        print("[privacy_curves] Skipping stratified run (not requested; pass --run_stratified with --epsilon_levels 5.0).")
     else:
         print("[privacy_curves] Skipping stratified run — σ computation failed.")
 

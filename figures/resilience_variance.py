@@ -10,7 +10,7 @@ Single panel:
 
 Usage:
     python figures/resilience_variance.py \
-        --input results/privacy_utility.csv \
+        --input results/privacy_utility_combined.csv \
         --output figures/resilience_variance.png
 """
 
@@ -26,6 +26,19 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+plt.rcParams.update({
+    "figure.dpi":        150,
+    "font.size":         11,
+    "font.family":       "serif",
+    "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
+    "axes.titlesize":    12,
+    "axes.titleweight":  "normal",
+    "axes.labelsize":    11,
+    "xtick.labelsize":   10,
+    "ytick.labelsize":   10,
+    "legend.fontsize":   10,
+})
+
 # Brand palette — matches plot_results_summary.py
 _C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d"]
 
@@ -40,7 +53,7 @@ EPS_LABELS = ["0.5", "1", "2", "5", "10", "∞"]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",  default="results/privacy_utility.csv")
+    parser.add_argument("--input",  default="results/privacy_utility_combined.csv")
     parser.add_argument("--output", default="figures/resilience_variance.png")
     parser.add_argument("--mode",   default="uniform",
                         help="Which DP mode to plot (uniform or stratified)")
@@ -60,22 +73,22 @@ def main():
             sub = df[df["epsilon_level"] == eps][task_col]
             if sub.empty:
                 continue
-            x_plot.append(eps if eps != float("inf") else 20.0)
+            x_plot.append(EPS_ORDER.index(eps))
             y_std.append(float(sub.std()))
 
         ax.plot(x_plot, y_std, color=color, marker="o", ms=4, linewidth=1.4,
                 label=task_name)
 
-    x_ticks = [e if e != float("inf") else 20.0 for e in EPS_ORDER]
-    ax.set_xticks(x_ticks)
-    ax.set_xticklabels(EPS_LABELS, fontsize=8)
-    ax.set_xlabel("Privacy budget ε", fontsize=8)
-    ax.set_ylabel("Std(AUC-ROC) across seeds", fontsize=8)
-    ax.set_title(f"Training Variance Under DP Noise ({args.mode} σ)",
-                 fontsize=9, fontweight="bold")
-    ax.legend(fontsize=7)
+    ax.set_xticks(range(len(EPS_ORDER)))
+    ax.set_xticklabels(EPS_LABELS)
+    ax.set_xlabel("Privacy budget ε")
+    ax.set_ylabel("Std(AUC-ROC) across seeds")
+    ax.set_title("AUC-ROC standard deviation across seeds as a function of privacy budget ε")
+    ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_ylim(bottom=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     fig.tight_layout()
     out = Path(args.output)

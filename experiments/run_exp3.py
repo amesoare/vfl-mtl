@@ -1,17 +1,14 @@
 """
-experiments/run_exp3.py — Exp 3: Task relatedness and negative transfer.
+experiments/run_exp3.py — Exp 3: Scalability (2 vs. 3 institutions).
 
-Compares four task-weight configurations to measure how task relatedness
-affects IHM performance:
-  all_tasks  : ihm=1 + decomp=1 + pheno=1  (full MTL)
-  ihm_only   : ihm=1 + decomp=0 + pheno=0  (single-task baseline)
-  ihm_decomp : ihm=1 + decomp=1 + pheno=0  (related pair: acute outcomes)
-  ihm_pheno  : ihm=1 + decomp=0 + pheno=1  (unrelated pair: acute vs. chronic)
+Measures:
+  - Communication rounds to convergence (loss delta < 0.001 over 5 rounds)
+  - Wall-clock time per round
+  - Per-task AUC at final round
 
-Negative transfer rate = fraction of seeds where IHM val AUC under an MTL
-config drops below the ihm_only baseline.
-
-In synthetic mode val AUC evaluation is skipped (random labels → meaningless AUC).
+Configurations:
+  n_sites=2 : Sites A + B only (IHM + Decomp tasks; pheno weight = 0)
+  n_sites=3 : All three sites (IHM + Decomp + Pheno)
 
 Seeds: [42, 123, 7]
 Output: results/exp3.csv
@@ -20,7 +17,7 @@ Usage:
     # Real data (on Snellius):
     python experiments/run_exp3.py \
         --splits_dir /home/asoare/vfl_mlt/data/vertical_splits \
-        --n_rounds 50 --device cpu
+        --n_rounds 100 --device cpu
 
     # Smoke test (local, no data):
     python experiments/run_exp3.py --n_rounds 3 --use_synthetic
@@ -39,48 +36,14 @@ from data_prep.dataset import build_site_loaders
 
 SEEDS = [42, 123, 7]
 
-# uncertainty_weighting=True for all multi-task configs (Kendall et al. 2018 loss balancing).
-# Single-task ihm_only is exempt — no imbalance to correct with one active task.
-TASK_CONFIGS = {
-    "all_tasks":   {"ihm": 1.0, "decomp": 1.0, "pheno": 1.0, "uncertainty_weighting": True},
-    "ihm_only":    {"ihm": 1.0, "decomp": 0.0, "pheno": 0.0, "uncertainty_weighting": False},
-    "ihm_decomp":  {"ihm": 1.0, "decomp": 1.0, "pheno": 0.0, "uncertainty_weighting": True},
-    "ihm_pheno":   {"ihm": 1.0, "decomp": 0.0, "pheno": 1.0, "uncertainty_weighting": False},
-}
 
-
-def compute_negative_transfer(rows: list[dict]) -> None:
-    """
-    Print negative transfer rate: fraction of (config, seed) pairs where
-    final-round val IHM AUC < ihm_only baseline for the same seed.
-    Skipped if val metrics are absent (synthetic mode).
-    """
-    if not any("val_ihm_auroc" in r for r in rows):
-        return
-
-    # Last round per (config, seed)
-    final: dict[tuple, float] = {}
-    for r in rows:
-        key = (r["task_config"], r["seed"])
-        if "val_ihm_auroc" in r:
-            final[key] = r["val_ihm_auroc"]
-
-    neg_transfer = 0
-    total = 0
-    for config_name in TASK_CONFIGS:
-        if config_name == "ihm_only":
-            continue
-        for seed in SEEDS:
-            baseline = final.get(("ihm_only", seed))
-            config_val = final.get((config_name, seed))
-            if baseline is not None and config_val is not None:
-                total += 1
-                if config_val < baseline:
-                    neg_transfer += 1
-
-    if total > 0:
-        print(f"\nNegative transfer rate: {neg_transfer}/{total} "
-              f"({100*neg_transfer/total:.1f}%) configs where MTL < single-task IHM AUC")
+def rounds_to_convergence(losses: list[float], threshold: float = 0.001, window: int = 5) -> int:
+    """Return round index where total loss delta over `window` rounds drops below threshold."""
+    for i in range(window, len(losses)):
+        delta = abs(losses[i - window] - losses[i])
+        if delta < threshold:
+            return i
+    return len(losses)  # did not converge within budget
 
 
 def main():
@@ -95,53 +58,70 @@ def main():
     parser.add_argument("--n_synthetic",   type=int, default=256)
     parser.add_argument("--patience",      type=int, default=15,
                         help="Early stopping patience in rounds (0 = disabled)")
+    parser.add_argument("--n_sites",       type=int, default=None,
+                        help="Run only this n_sites value (default: all). One of: 2, 3")
     args = parser.parse_args()
 
     if args.use_synthetic:
-        prebuilt = None
+        prebuilt_by_nsites = {2: None, 3: None}
         decomp_pos_weight = 1.0
     else:
-        print("[exp3] Pre-loading data loaders (one-time GPFS read)...")
+        print("[exp4] Pre-loading data loaders (one-time GPFS read)...")
         project_root = Path(args.splits_dir).parents[1]
         site_b_csv = Path(args.splits_dir) / "site_B_labs.csv"
         _b = pd.read_csv(site_b_csv, usecols=["y_decomp", "split"])
         pos_rate = float(_b[_b["split"] == "train"]["y_decomp"].mean())
         decomp_pos_weight = (1.0 - pos_rate) / pos_rate
-        print(f"[exp3] decomp pos_weight={decomp_pos_weight:.1f} (pos_rate={pos_rate:.3%})")
-        prebuilt = {
+        print(f"[exp4] decomp pos_weight={decomp_pos_weight:.1f} (pos_rate={pos_rate:.3%})")
+        # n_sites=3 loaders contain all sites; n_sites=2 reuses A+B from the same load.
+        all_loaders = {
             "train": build_site_loaders(project_root, "train", args.batch_size),
             "val":   build_site_loaders(project_root, "val",   args.batch_size),
             "decomp_pos_weight": decomp_pos_weight,
         }
-        print("[exp3] Data loaded. Starting training runs...")
+        prebuilt_by_nsites = {2: all_loaders, 3: all_loaders}
+        print("[exp4] Data loaded. Starting training runs...")
+
+    sites_to_run = [args.n_sites] if args.n_sites is not None else [2, 3]
 
     all_rows = []
 
-    for config_name, config in TASK_CONFIGS.items():
-        uw = config.pop("uncertainty_weighting", False)
-        task_weights = config
+    for n_sites in sites_to_run:
+        task_weights = (
+            {"ihm": 1.0, "decomp": 1.0, "pheno": 0.0}
+            if n_sites == 2
+            else {"ihm": 1.0, "decomp": 1.0, "pheno": 1.0}
+        )
         for seed in SEEDS:
-            print(f"\n=== config={config_name} | seed={seed} ===")
+            print(f"\n=== n_sites={n_sites} | seed={seed} ===")
             cfg = TrainConfig(
                 splits_dir=args.splits_dir,
                 n_rounds=args.n_rounds,
                 batch_size=args.batch_size,
                 device=args.device,
                 seed=seed,
+                model_name=f"exp4_sites{n_sites}",
+                n_sites=n_sites,
+                task_weights=task_weights,
+                uncertainty_weighting=True,
                 use_fedavg=True,
                 fedavg_every=5,
-                task_weights=task_weights,
-                uncertainty_weighting=uw,
                 use_synthetic=args.use_synthetic,
                 n_synthetic=args.n_synthetic,
                 patience=args.patience,
                 decomp_pos_weight=decomp_pos_weight,
             )
-            results = run_training(cfg, prebuilt_loaders=prebuilt)
+            results = run_training(cfg, prebuilt_loaders=prebuilt_by_nsites[n_sites])
+            losses = [r["train_loss"] for r in results]
+            conv_round = rounds_to_convergence(losses)
+            print(f"  Convergence round: {conv_round}/{args.n_rounds}")
             for r in results:
-                all_rows.append({"task_config": config_name, "seed": seed, **r})
-
-    compute_negative_transfer(all_rows)
+                all_rows.append({
+                    "n_sites":          n_sites,
+                    "seed":             seed,
+                    "convergence_round": conv_round,
+                    **r,
+                })
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", newline="") as f:
@@ -149,7 +129,7 @@ def main():
         writer.writeheader()
         writer.writerows(all_rows)
 
-    print(f"\nExp 3 complete. Results → {args.output}")
+    print(f"\nExp 4 complete. Results → {args.output}")
 
 
 if __name__ == "__main__":

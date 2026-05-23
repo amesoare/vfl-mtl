@@ -27,7 +27,7 @@ Usage:
     # Full run (Snellius):
     python experiments/run_exp5.py \\
         --splits_dir /home/asoare/vfl_mlt/data/vertical_splits \\
-        --n_rounds 50 --device gpu_h100
+        --n_rounds 100 --device gpu_a100
 """
 
 import argparse

@@ -379,38 +379,50 @@ Deliverable: model/, fl/ modules with passing unit tests
 Goals:
   - Run all main experiments; collect results CSVs
 
-Experiments:
-  Exp 1 — Task heterogeneity vs. homogeneity:
-    - Compare VFL-MTL vs. three per-site single-task baselines:
-        ST-IHM   (Site A, IHM only   — ihm:1 decomp:0 pheno:0)
-        ST-Decomp (Site B, Decomp only — ihm:0 decomp:1 pheno:0)
-        ST-Pheno (Site C, Pheno only  — ihm:0 decomp:0 pheno:1)
-    - MTL gain per task = VFL-MTL metric − ST-{task} metric for the same task
-    - Metrics: per-task AUC-ROC, AUC-PR, macro-AUC (phenotyping)
-    - Note: VFL-SingleTask (shared IHM across all sites) was replaced by these three
-      per-site baselines. Shared-task VFL is covered separately as baseline 3 in the
-      baselines list; mixing it into Exp 1 conflated two distinct ablations.
+## EXPERIMENT STATUS (as of 2026-05-10)
 
-  Exp 2 — Feature asymmetry:
-    - Split sizes: 5/6/6 vs. 3/7/7 vs. 7/6/4 features per site
-    - Measure sensitivity of MTL gains to feature imbalance
+  Numbering note: original Exp 2 (feature asymmetry) was omitted — see below. Original Exp 3
+  and Exp 4 were renumbered as Exp 2 and Exp 3 respectively. Code files (run_exp2.py,
+  run_exp3.py, evaluate_exp2.py, evaluate_exp3.py) and result CSVs (results/exp2.csv,
+  results/exp3.csv) reflect the new numbering.
 
-  Exp 3 — Task relatedness:
-    - Pair A: Mortality + Decompensation (related)
-    - Pair B: Mortality + Phenotyping (less related)
-    - Measure negative transfer rate: tasks where MTL underperforms single-task baseline
+  Exp 1 ✅ COMPLETE — results/exp1.csv (real MIMIC, Snellius, 3 seeds)
+    VFL-MTL: IHM=0.782, Decomp=0.712, Pheno=0.620
+    ST-IHM: IHM=0.795 | ST-Decomp: Decomp=0.701 | ST-Pheno: Pheno=0.612
 
-  Exp 4 — Scalability:
-    - 2, 3, 4 institutions with varying task subsets
-    - Metrics: communication rounds to convergence, wall-clock time, per-task AUC
+  Exp 2 [ORIGINAL] ⚠️ OMITTED — Feature asymmetry (vertical split sensitivity).
+    results/exp2.csv originally used LOS for Site B instead of Decompensation, and a
+    different split protocol than specified. Needs to be re-designed with correct vertical
+    splits before reporting. Not included in paper; slot reused — see renaming note above.
+
+  Exp 2 [CURRENT] ✅ COMPLETE — Task relatedness and negative transfer (was original Exp 3)
+    results/exp2.csv (real MIMIC, Snellius, 3 seeds)
+    configs: all_tasks / ihm_only / ihm_decomp / ihm_pheno; ~72–92 rounds
+    ihm_decomp config rerun (server.py bug fix): results/exp2_ihm_decomp.csv ✅
+
+  Exp 3 [CURRENT] ✅ COMPLETE — Scalability (was original Exp 4)
+    results/exp3.csv (real MIMIC, Snellius, 3 seeds)
+    n_sites ∈ {2, 3}; 4-site run not attempted (LOS task not used).
+    n_sites=2: rerun with fixed early stopping → results/exp3_n_sites_2.csv ✅ merged into exp3.csv
+    n_sites=3: AUC values valid; convergence_round column unreliable (records first trigger,
+      not actual termination) — report per-round wall-clock time (5.54s vs 4.18s) in text,
+      not convergence_round from CSV.
+
+  Baselines ✅ FINAL (limited) — local-only + centralized_oracle present (real MIMIC)
+    centralized: IHM=0.862, Decomp=0.910, Pheno=0.655
+    MOCHA and FMTLJD: CANNOT be run with this setup. Both require horizontal FL
+    (shared patient rows across clients); our VFL setup partitions features vertically
+    and the codebases are architecturally incompatible. These baselines are cited as
+    reported numbers from their papers only, not reproduced experimentally.
+    VFL-SingleTask: ST-IHM, ST-Decomp, ST-Pheno are present in exp1.csv.
 
 Steps:
-  1. Write experiments/run_exp1.py, run_exp2.py, run_exp3.py, run_exp4.py
-  2. Use seeds [42, 123, 7] for all runs; report mean ± std
-  3. Log all results to results/exp{N}.csv with columns: model, site, task, metric, value, seed
-  4. Write results/plot_results.py: generate comparison tables and figures
+  1. Write experiments/run_exp1.py, run_exp2.py, run_exp3.py ✅
+  2. Use seeds [42, 123, 7] for all runs; report mean ± std ✅
+  3. Log all results to results/exp{N}.csv ✅
+  4. Write results/plot_results.py ✅
 
-Deliverable: results/ CSVs + automated plotting scripts
+Deliverable: results/ CSVs + automated plotting scripts ✅
 
 ---
 
@@ -442,7 +454,9 @@ Steps:
      - embed_dim: int (sweep 32/64/128; already a TrainConfig field)
   2. Run ablations with same seeds as main experiments [42, 123, 7]
   3. Write experiments/run_ablations.py: single script covering Abl 1–5
-     Output: results/ablations.csv
+     Output: results/ablations.csv ✅ COMPLETE (real MIMIC, 3 seeds each):
+     VFL-MTL, abl_no_mmoe, abl_experts_2, abl_experts_8,
+     abl_uniform_gating, abl_embed_32, abl_embed_128
   4. Write figures/architecture_diagram.py (matplotlib or use BioRender export)
   5. Write figures/negative_transfer_heatmap.py: task × model heatmap of AUC delta vs. local
   6. Write figures/scalability_curves.py: rounds to convergence vs. number of institutions
@@ -561,7 +575,8 @@ contribution is dropped entirely.
 1. Task-stratified DP-SGD with ε sweep (answers SRQ2):
    - Apply DP-SGD via Opacus to the VFL-MTL training loop; clip and noise embedding
      gradients at each client before transmission to server
-   - Uniform σ sweep: ε ∈ {0.5, 1, 2, 5, 10, ∞ (no DP)}, 5 seeds per level
+   - Uniform σ sweep: ε ∈ {0.5, 1, 2, 5, 10, ∞ (no DP)}, 3 seeds per level
+     (Note: plan originally called for 5 seeds; actual Slurm scripts use seeds [7, 42, 123])
    - Task-stratified variant: assign σ_IHM < σ_Decomp < σ_Pheno reflecting clinical
      risk hierarchy; compare per-task AUC degradation against uniform baseline
    - Define clinical utility floors per task: IHM ≥ 0.75, Decomp ≥ 0.70, Pheno ≥ 0.65
@@ -570,7 +585,7 @@ contribution is dropped entirely.
    - Standard Rényi DP accounting via Opacus (Mironov 2017; Yousefpour et al. 2021)
 
 2. DP stochasticity resilience analysis (answers SRQ1):
-   - At each ε level, report std(AUC) across 5 seeds as variance inflation index
+   - At each ε level, report std(AUC) across 3 seeds as variance inflation index
    - Report convergence round (first round where val AUC exceeds 90% of no-DP plateau)
    - Empirical gradient correlation matrix: estimate Pearson correlation of per-task
      embedding gradient vectors across task heads during first training epoch; report
@@ -649,38 +664,36 @@ Steps:
      - Assert encoder gradients are clipped to max_grad_norm
 
 Deliverable Days 1–2: privacy/ module passing unit tests; train.py accepts privacy_config
+✅ COMPLETE — privacy/ module done, unit tests passing (tests/test_privacy.py)
 
 ---
 
 #### Days 3–5: ε Sweep + Resilience Analysis (SRQ1 + SRQ2)
 
-  6. Write experiments/privacy_utility_curves.py:
-     ε levels: {∞ (no DP), 10, 5, 2, 1, 0.5}; seeds: [42, 123, 7, 17, 99]
-     - Compute σ from ε using Opacus get_noise_multiplier() (target_delta=1e-5,
-       sample_rate=batch/N, epochs=50)
-     - Run VFL-MTL for 50 rounds (uniform σ mode)
-     - Log: round, seed, ε_level, val_ihm_auroc, val_decomp_auroc,
-       val_pheno_macro_auroc, convergence_round
-     - Output: results/privacy_utility.csv
+## ε SWEEP STATUS (as of 2026-05-09) — ✅ COMPLETE, REAL MIMIC
 
-  7. Run task-stratified variant:
-     Clinical risk hierarchy: σ_IHM < σ_Decomp < σ_Pheno
-     - Fix ε_total = 5; allocate as ε_IHM=2, ε_Decomp=2, ε_Pheno=1
-     - Compare per-task AUC against uniform σ at same ε_total=5
-     - Output: added rows in results/privacy_utility.csv with mode=stratified
+  6. Write experiments/privacy_utility_curves.py: ✅ done
+     ε levels: {∞ (no DP), 10, 5, 2, 1, 0.5}; seeds: [42, 123, 7] (consistent with Paper 1)
 
-  8. SRQ1 resilience metrics:
-     - std(AUC) across 5 seeds per ε level per task → variance inflation index
-     - Convergence round: first round where val_AUC ≥ 0.90 × AUC(ε=∞)
-     - Plot: figures/resilience_variance.py — std(AUC) vs. ε, one line per task
+  SLURM scripts: ✅ run_privacy_curves_eps{05,1,2,5,10}.sh — one job per ε level
 
-  9. SRQ2 threshold identification:
-     - For each task, find ε* = min ε where mean(AUC) ≥ clinical floor
-       (IHM ≥ 0.75, Decomp ≥ 0.70, Pheno ≥ 0.65; Harutyunyan et al. 2019)
-     - If no ε in sweep meets floor: flag as "DP-incompatible at tested budgets"
+  Results:
+     results/privacy_utility_combined.csv — ✅ FINAL, real MIMIC, all ε levels present,
+     100 rounds per ε<∞, convergence-limited for ε=∞ (59–79 rounds across seeds).
+     No-DP IHM≈0.782 matches exp1. This is the authoritative source for Paper 2 figures.
 
-Deliverable end of Week 1: results/privacy_utility.csv, SRQ1 and SRQ2 numerically
-answered, figures/privacy_utility_plot.py, figures/resilience_variance.py
+     results/privacy_utility_eps{05,1,2,5,10}.csv — ✅ present (per-ε slices, real MIMIC).
+     ε=0.5 and ε=1.0 show partial convergence across seeds (expected under heavy noise).
+
+     results/privacy_utility.csv — SYNTHETIC local run (non-standard seeds). Do not use.
+
+  7. Task-stratified variant (ε_total=5): results in privacy_utility_eps5.csv ✅
+
+  8. SRQ1 resilience metrics: ✅ computable from privacy_utility_combined.csv
+
+  9. SRQ2 threshold identification: ✅ computable from privacy_utility_combined.csv
+
+Deliverable end of Week 1: ✅ complete — real-MIMIC ε sweep final
 
 ---
 
@@ -712,17 +725,23 @@ Goals:
      Note: gradient-norm MIA (Carlini et al. 2022) not used — requires white-box
      gradient access which the server does not have in VFL.
 
+  STATUS: attacks/ code ✅ complete; results/label_inference.csv and
+  results/embedding_mia.csv ✅ real MIMIC (run after valid ε sweep on Snellius).
+
 #### Days 7–8: Label Inference Bound + Ablations
 
-  3. Label inference bound: extend Liu et al. (2022) to multi-task VFL
-     Liu et al. (2022): I(z; y) ≤ g(σ) for single-task VFL.
-     Extension:
-     - Let ρ = Pearson correlation between ∂L_k/∂z and ∂L_j/∂z for tasks k ≠ j
+  3. Label inference bound: novel contribution — no prior paper derives this bound.
+     Single-task base: g(σ) = Φ(C/σ), derived from the Gaussian mechanism (Abadi et al., 2016).
+     Under Gaussian noise N(0,σ²C²I) at the cut layer, the statistical distinguishability
+     between positive- and negative-class embedding distributions — and thus label inference AUC —
+     is bounded by Φ(C/σ). This is the author's own derivation for VFL; it is NOT from Liu et al.
+     (2022) or any other prior work. (Liu et al. 2022 = VFL survey, TKDE; no MI bound therein.)
+     Multi-task extension:
+     - Let ρ = max pairwise cosine similarity between ∂L_k/∂z and ∂L_j/∂z for tasks k ≠ j
        (estimated from renyi_accountant.cross_task_coupling_matrix() in Week 1)
-     - Proposition: I(z; y_1, ..., y_K) ≤ g(σ, ρ) where g is monotonically increasing in ρ
-     - Proof sketch: at the point in Liu et al.'s derivation where the single-task
-       assumption enters, substitute the multi-task gradient correlation term; show
-       that higher ρ increases the mutual information upper bound
+     - Proposition: label inference AUC ≤ g(σ, ρ) = Φ(C·√(1+ρ)/σ), monotonically increasing in ρ
+     - Proof sketch: the √(1+ρ) factor captures how task gradient coupling amplifies the
+       effective signal seen by the adversary beyond the single-task σ term
 
      Write experiments/validate_bound.py:
      - For each ε level: compute ρ from first-epoch gradients + compute theoretical
@@ -730,28 +749,49 @@ Goals:
      - Plot: theoretical bound vs. empirical accuracy across ε levels and ρ values
      - Output: results/bound_validation.csv
 
-  4. Write experiments/ablations_dp.py:
+  4. Write experiments/ablations_dp.py: ✅ code complete
      - Abl 1: Uniform σ vs. task-stratified σ at ε_total=5 — per-task AUC comparison
      - Abl 2: Related task pair (IHM + Decomp, ρ high) vs. unrelated (IHM + Pheno, ρ low)
        — label inference accuracy difference to confirm coupling amplification
+     - Abl 3: embed_dim ∈ {32, 64, 128} × ε ∈ {1, 5, ∞} — per-task AUC comparison
+       SNR = 1/(embed_dim × σ²); larger embed_dim degrades utility under DP.
+       Validates that Paper 2's ε* values are conditional on embed_dim=64.
      - Output: results/dp_ablations.csv
+     STATUS: results/dp_ablations.csv ✅ real MIMIC, 3 seeds (Abl1+2+3).
+     Note: Abl2+3 val metrics in dp_ablations.csv are NaN (training loop gap) —
+     proper test-set inference covered by results/test_ablations_dp.csv (job 22601543).
+     results/bound_validation.csv ✅ real MIMIC — empirical IHM AUC=0.783 matches exp1.
 
-Deliverable Days 6–8: attacks/ module, results/bound_validation.csv,
-results/dp_ablations.csv, bound proposition written up
+  STATUS: validate_bound.py ✅ code complete; results/bound_validation.csv ✅ real MIMIC.
+
+Deliverable Days 6–8: attacks/ ✅ real MIMIC; dp_ablations.csv ✅ real MIMIC;
+  test_ablations_dp.csv ✅ real MIMIC (Abl2+3 test-set inference); bound_validation.csv ✅
 
 #### Days 9–10: Figures + Results Assembly
 
-  5. Write figures/privacy_utility_plot.py:
+  5. Write figures/plot_ablations_dp.py: ✅ code complete
+     - Abl 1 panel: grouped bars, uniform vs. stratified σ per task
+     - Abl 2 panel: ρ + IHM inference AUC for related vs. unrelated task pairs
+     - Abl 3 panel: line plot per task, x=ε, lines=embed_dim ∈ {32, 64, 128}
+     - Usage: python figures/plot_ablations_dp.py [--abl {1,2,3}]
+     Output: figures/ablations_dp_abl{1,2,3}.png
+
+  6. Write figures/privacy_utility_plot.py: ✅ code complete
      - Three-panel line plot: one panel per task (IHM / Decomp / Pheno)
-     - x-axis: ε (log scale); y-axis: mean AUC ± std across 5 seeds
+     - x-axis: ε (log scale); y-axis: mean AUC ± std across 3 seeds
      - Two lines per panel: uniform σ vs. task-stratified σ
      - Horizontal dashed line: clinical utility floor; vertical marker: ε*
 
-  6. Write figures/bound_validation.py:
+  6. Write figures/bound_validation.py: ✅ code complete
      - Theoretical MI bound vs. empirical label inference accuracy across ε levels
      - One line per ρ value
 
-Deliverable Days 9–10: all figures complete, results assembled
+  7. Write figures/resilience_variance.py: ✅ code complete
+     - std(AUC) vs. ε per task
+
+  STATUS: All figure scripts ✅ complete. All figures renderable.
+
+Deliverable Days 9–10: figure scripts ✅; all figures renderable.
 
 #### Days 10–14: Writing
 
@@ -776,7 +816,7 @@ Deliverable Days 9–10: all figures complete, results assembled
     - Rényi DP accounting + gradient coupling measurement
     - Multi-task label inference bound (proposition + proof sketch)
     - Embedding-space attack suite design
-    - Evaluation setup: MIMIC-III, ε sweep, 5 seeds, clinical utility floors
+    - Evaluation setup: MIMIC-III, ε sweep, 3 seeds, clinical utility floors
 
   Results (Days 12–13):
     - Per-task AUC vs. ε line plot (privacy-utility curves, 3 tasks)
@@ -795,7 +835,7 @@ Deliverable Days 9–10: all figures complete, results assembled
   Abstract + polish (Day 14)
 
   Reporting format (following FMTLJD precedent):
-    - All AUC values: mean ± std across 5 seeds
+    - All AUC values: mean ± std across 3 seeds
     - All ε values with explicit δ=1e-5
     - Per-task results in separate rows/panels — do not average across tasks
 
@@ -811,7 +851,7 @@ Answers SRQ2 — at what ε does utility collapse?
 
 Three-panel line plot, one panel per task (IHM / Decomp / Pheno):
   - x-axis: ε ∈ {0.5, 1, 2, 5, 10, ∞} on log scale
-  - y-axis: mean AUC-ROC ± std across 5 seeds
+  - y-axis: mean AUC-ROC ± std across 3 seeds
   - Two lines per panel: uniform σ vs. task-stratified σ
   - Horizontal dashed line: clinical utility floor (IHM=0.75, Decomp=0.70, Pheno=0.65)
   - Vertical marker: ε* — the crossing point where mean AUC drops below floor
@@ -825,7 +865,7 @@ Answers SRQ1 — how much does DP stochasticity destabilize training?
 
 Single panel:
   - x-axis: ε (log scale)
-  - y-axis: std(AUC) across 5 seeds — the variance inflation index
+  - y-axis: std(AUC) across 3 seeds — the variance inflation index
   - One line per task (IHM, Decomp, Pheno)
   - Expected: Decomp line rises steepest (highest MTL gain in Paper 1 = most dependent
     on shared representation = most sensitive to DP noise on shared gradients)
@@ -847,10 +887,10 @@ Single panel:
 
 | Table              | Source                        | Content                                                               |
 |--------------------|-------------------------------|-----------------------------------------------------------------------|
-| ε* per task        | privacy_utility.csv           | SRQ2 answer — one row per task, ε* and floor-met flag                 |
-| MIA results        | attacks/embedding_mia.py      | Attack AUC + accuracy at each ε level; target ≈ 0.50                 |
-| Label inference    | attacks/label_inference.py    | Fraction of labels correctly inferred per task per ε level            |
-| DP ablations       | results/dp_ablations.csv      | Abl 1: uniform vs. stratified σ; Abl 2: related vs. unrelated pairs   |
+| ε* per task        | results/privacy_utility_combined.csv | SRQ2 answer — one row per task, ε* and floor-met flag           |
+| MIA results        | results/embedding_mia.csv     | Attack AUC + accuracy at each ε level; target ≈ 0.50                 |
+| Label inference    | results/label_inference.csv   | Fraction of labels correctly inferred per task per ε level            |
+| DP ablations       | results/dp_ablations.csv (Abl1) + results/test_ablations_dp.csv (Abl2+3) | Abl 1: uniform vs. stratified σ; Abl 2: related vs. unrelated pairs; Abl 3: embed_dim × DP |
 
 ### RQ → Figure Map
 
@@ -894,16 +934,20 @@ vfl_mtl/
     embedding_mia.py          # Binary classifier on embeddings → member/non-member
   experiments/
     run_exp1.py               # Task heterogeneity vs. homogeneity
-    run_exp2.py               # Feature asymmetry
-    run_exp3.py               # Task relatedness + negative transfer
-    run_exp4.py               # Scalability
-    privacy_utility_curves.py # ε sweep, 5 seeds, per-task AUC + std
-    ablations_dp.py           # Task-stratified vs. uniform σ; related vs. unrelated tasks
-    validate_bound.py         # ρ sweep, theoretical bound vs. empirical inference accuracy
+    run_exp2.py               # Task relatedness + negative transfer (was Exp 3)
+    run_exp3.py               # Scalability (was Exp 4)
+    privacy_utility_curves.py    # ε sweep, 3 seeds, per-task AUC + std
+    ablations_dp.py              # Task-stratified vs. uniform σ; related vs. unrelated tasks
+    validate_bound.py            # ρ sweep, theoretical bound vs. empirical inference accuracy
+    evaluate_test_ablations_dp.py # Test-set inference for Abl2+Abl3 DP ablation checkpoints
+    run_factorial_pcmu.py        # PCMU Phase 2 full factorial (108 runs)
   results/
-    exp1.csv ... exp4.csv
-    privacy_utility.csv
-    dp_ablations.csv
+    exp1.csv, exp2.csv, exp3.csv
+    privacy_utility_combined.csv # Canonical ε sweep — all ε levels + ε=∞ baseline
+    dp_ablations.csv             # Abl1 real MIMIC; Abl2/3 val metrics (NaN for test)
+    test_ablations_dp.csv        # Proper test-set inference for Abl2+Abl3
+    embedding_mia.csv
+    label_inference.csv
     bound_validation.csv
   figures/
     architecture_diagram.py

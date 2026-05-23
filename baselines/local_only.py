@@ -298,13 +298,14 @@ def train_local(
             best_state = {k: v.cpu().clone() for k, v in
                           {**dict(encoder.named_parameters()),
                            **dict(head.named_parameters())}.items()}
-            if ckpt_dir is not None:
+            if ckpt_dir is not None and not use_synthetic:
                 Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
                 torch.save(
                     {"encoder": encoder.state_dict(),
                      "head":    head.state_dict(),
                      "site": site, "seed": seed,
-                     "embed_dim": embed_dim, "hidden_dim": hidden_dim},
+                     "embed_dim": embed_dim, "hidden_dim": hidden_dim,
+                     "best_val_score": float(best_score)},
                     Path(ckpt_dir) / f"best_local_{site}_seed{seed}.pt",
                 )
         else:

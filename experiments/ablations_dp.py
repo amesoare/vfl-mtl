@@ -1,23 +1,17 @@
 """
 experiments/ablations_dp.py — Paper 2 DP ablations.
 
-Abl 1 — Uniform σ vs. task-stratified σ at ε_total=5
-  Source: results/privacy_utility.csv (no new training).
-  Reads final-round val AUROCs for mode=uniform/stratified at epsilon_level=5.0
-  and writes a comparison summary.
-
-Abl 2 — Related vs. unrelated task pair under DP (coupling amplification)
-  Trains two 2-task VFL-MTL configs at ε=5 (uniform):
-    ihm_decomp : task_weights={ihm:1, decomp:1, pheno:0}  (expected high ρ)
-    ihm_pheno  : task_weights={ihm:1, decomp:0, pheno:1}  (expected low ρ)
-  For each config:
-    - Logs gradient cosine similarity (ρ proxy) via grad_sim_every=5
-    - Runs label inference attack on IHM from z_A embeddings
-  Hypothesis: higher ρ (ihm_decomp) → higher IHM inference AUC.
+Abl 1 — uniform vs. task-stratified σ at ε=5; reads privacy_utility.csv (no new training).
+Abl 2 — related (IHM+Decomp) vs. unrelated (IHM+Pheno) task pair at ε=5;
+         trains two 2-task configs and runs label inference to test coupling amplification.
+Abl 3 — embed_dim ∈ {32, 64, 128} × ε ∈ {1, 5, ∞};
+         larger embed_dim degrades SNR under DP (SNR = 1/(embed_dim × σ²)),
+         so ε* is embed_dim-dependent. Validates Paper 2's ε* at embed_dim=64.
 
 Output: results/dp_ablations.csv
-  columns: ablation, config, seed, val_ihm_auroc, val_decomp_auroc,
-           val_pheno_macro_auroc, rho, inference_auroc_ihm, inference_accuracy_ihm
+  columns: ablation, config, embed_dim, epsilon_level, seed, val_ihm_auroc,
+           val_decomp_auroc, val_pheno_macro_auroc, rho,
+           inference_auroc_ihm, inference_accuracy_ihm
 
 Usage
 -----
@@ -59,6 +53,9 @@ ABL2_CONFIGS = {
     "ihm_pheno":  {"task_weights": {"ihm": 1.0, "decomp": 0.0, "pheno": 1.0}},
 }
 
+ABL3_EMBED_DIMS = [32, 64, 128]
+ABL3_EPS_LEVELS = [1.0, 5.0, float("inf")]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -97,15 +94,16 @@ def _extract_rho(results: list[dict]) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# Ablation 1 — read from privacy_utility.csv
+# Ablation 1 — read test-set results from test_results_dp.csv
 # ---------------------------------------------------------------------------
 
-def run_abl1(privacy_csv: Path) -> list[dict]:
-    if not privacy_csv.exists():
-        print(f"[abl1] {privacy_csv} not found — skipping Abl 1.")
+def run_abl1(test_dp_csv: Path) -> list[dict]:
+    """Read uniform vs stratified AUC at ε=5 from the test-set evaluation CSV."""
+    if not test_dp_csv.exists():
+        print(f"[abl1] {test_dp_csv} not found — skipping Abl 1.")
         return []
 
-    df = pd.read_csv(privacy_csv)
+    df = pd.read_csv(test_dp_csv)
     df_eps5 = df[df["epsilon_level"].astype(str) == "5.0"]
 
     rows = []
@@ -114,17 +112,17 @@ def run_abl1(privacy_csv: Path) -> list[dict]:
         if df_mode.empty:
             print(f"[abl1] No rows for mode={mode} at ε=5.0 — skipping.")
             continue
-        for seed in df_mode["seed"].unique():
-            last = _last_row_metrics(df_mode, "mode", mode, seed)
+        for _, row in df_mode.iterrows():
+            seed = int(row["seed"])
             rows.append({
-                "ablation":              "abl1",
-                "config":                f"{mode}_eps5",
-                "seed":                  seed,
-                "val_ihm_auroc":         last.get("val_ihm_auroc",         float("nan")),
-                "val_decomp_auroc":      last.get("val_decomp_auroc",      float("nan")),
-                "val_pheno_macro_auroc": last.get("val_pheno_macro_auroc", float("nan")),
-                "rho":                   float("nan"),
-                "inference_auroc_ihm":   float("nan"),
+                "ablation":               "abl1",
+                "config":                 f"{mode}_eps5",
+                "seed":                   seed,
+                "val_ihm_auroc":          row.get("ihm_auroc",            float("nan")),
+                "val_decomp_auroc":       row.get("decomp_auroc",         float("nan")),
+                "val_pheno_macro_auroc":  row.get("pheno_macro_auroc",    float("nan")),
+                "rho":                    float("nan"),
+                "inference_auroc_ihm":    float("nan"),
                 "inference_accuracy_ihm": float("nan"),
             })
     return rows
@@ -200,19 +198,19 @@ def run_abl2(
                     _load_weights(ckpt, clients, server)
 
                 if args.use_synthetic:
-                    n_tr  = max(1, args.n_synthetic // args.batch_size)
-                    n_val = max(1, n_tr // 4)
+                    n_tr = max(1, args.n_synthetic // args.batch_size)
+                    n_te = max(1, n_tr // 4)
                     train_loaders = make_synthetic_loaders(args.batch_size, 48, n_tr)
-                    val_loaders   = make_synthetic_loaders(args.batch_size, 48, n_val)
+                    test_loaders  = make_synthetic_loaders(args.batch_size, 48, n_te)
                 else:
                     from data_prep.dataset import build_site_loaders
                     project_root  = Path(args.splits_dir).parents[1]
-                    train_loaders = build_site_loaders(project_root, "train", args.batch_size)
-                    val_loaders   = build_site_loaders(project_root, "val",   args.batch_size)
+                    train_loaders = build_site_loaders(project_root, "train",      args.batch_size)
+                    test_loaders  = build_site_loaders(project_root, args.split,   args.batch_size)
 
                 z_train, y_train = _extract_embeddings(clients, train_loaders, device)
-                z_val,   y_val   = _extract_embeddings(clients, val_loaders,   device)
-                attack_rows = run_label_inference(z_train, y_train, z_val, y_val)
+                z_test,  y_test  = _extract_embeddings(clients, test_loaders,  device)
+                attack_rows = run_label_inference(z_train, y_train, z_test, y_test)
 
                 ihm_row = next((r for r in attack_rows if r["task"] == "ihm"), {})
                 inf_auroc = ihm_row.get("auroc",    float("nan"))
@@ -224,14 +222,73 @@ def run_abl2(
                 "ablation":               "abl2",
                 "config":                 config_name,
                 "seed":                   seed,
-                "val_ihm_auroc":          last.get("val_ihm_auroc",         float("nan")),
-                "val_decomp_auroc":       last.get("val_decomp_auroc",      float("nan")),
-                "val_pheno_macro_auroc":  last.get("val_pheno_macro_auroc", float("nan")),
                 "rho":                    round(rho, 6),
                 "inference_auroc_ihm":    round(inf_auroc, 6) if inf_auroc == inf_auroc else float("nan"),
                 "inference_accuracy_ihm": round(inf_acc, 6)   if inf_acc   == inf_acc   else float("nan"),
             })
 
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Ablation 3 — embed_dim × DP interaction
+# ---------------------------------------------------------------------------
+
+def run_abl3(
+    args: argparse.Namespace,
+    sample_rate: float,
+    prebuilt: dict | None,
+    decomp_pos_weight: float,
+) -> list[dict]:
+    rows: list[dict] = []
+
+    for embed_dim in ABL3_EMBED_DIMS:
+        for eps in ABL3_EPS_LEVELS:
+            sigma = _compute_sigma(eps, sample_rate, args.n_rounds)
+            privacy_cfg = (
+                None if sigma is None
+                else {"mode": "uniform", "sigma": sigma,
+                      "max_grad_norm": MAX_GRAD_NORM, "delta": DELTA}
+            )
+            eps_label = "inf" if not math.isfinite(eps) else f"{eps:g}"
+            print(f"\n── Abl3 | embed_dim={embed_dim} | ε={eps_label} ──")
+
+            for seed in SEEDS:
+                model_name = f"abl3_embed{embed_dim}_eps{eps_label}"
+                print(f"  seed={seed}")
+
+                cfg = TrainConfig(
+                    splits_dir=args.splits_dir,
+                    n_rounds=args.n_rounds,
+                    batch_size=args.batch_size,
+                    device=args.device,
+                    seed=seed,
+                    use_fedavg=True,
+                    fedavg_every=5,
+                    use_synthetic=args.use_synthetic,
+                    n_synthetic=args.n_synthetic,
+                    patience=args.patience,
+                    decomp_pos_weight=decomp_pos_weight,
+                    model_name=model_name,
+                    embed_dim=embed_dim,
+                    privacy_config=privacy_cfg,
+                )
+                results = run_training(cfg, prebuilt_loaders=prebuilt)
+                last = results[-1] if results else {}
+
+                rows.append({
+                    "ablation":               "abl3",
+                    "config":                 f"embed{embed_dim}_eps{eps_label}",
+                    "embed_dim":              embed_dim,
+                    "epsilon_level":          eps,
+                    "seed":                   seed,
+                    "val_ihm_auroc":          last.get("val_ihm_auroc",         float("nan")),
+                    "val_decomp_auroc":       last.get("val_decomp_auroc",      float("nan")),
+                    "val_pheno_macro_auroc":  last.get("val_pheno_macro_auroc", float("nan")),
+                    "rho":                    float("nan"),
+                    "inference_auroc_ihm":    float("nan"),
+                    "inference_accuracy_ihm": float("nan"),
+                })
     return rows
 
 
@@ -245,7 +302,8 @@ def main() -> None:
     )
     parser.add_argument("--splits_dir",    default="data/vertical_splits")
     parser.add_argument("--ckpt_dir",      default="checkpoints")
-    parser.add_argument("--privacy_csv",   default="results/privacy_utility.csv")
+    parser.add_argument("--test_dp_csv",   default="results/test_results_dp.csv",
+                        help="Test-set DP evaluation CSV for Abl 1 (uniform vs stratified at ε=5).")
     parser.add_argument("--output",        default="results/dp_ablations.csv")
     parser.add_argument("--n_rounds",      type=int, default=100)
     parser.add_argument("--batch_size",    type=int, default=64)
@@ -253,6 +311,8 @@ def main() -> None:
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--use_synthetic", action="store_true")
     parser.add_argument("--n_synthetic",   type=int, default=256)
+    parser.add_argument("--split",         default="test", choices=["val", "test"],
+                        help="Held-out split for label inference probe evaluation in Abl 2.")
     args = parser.parse_args()
 
     # ---- Data ----
@@ -288,10 +348,13 @@ def main() -> None:
     all_rows: list[dict] = []
 
     print("\n── Abl 1: uniform vs. stratified at ε=5 ──")
-    all_rows.extend(run_abl1(Path(args.privacy_csv)))
+    all_rows.extend(run_abl1(Path(args.test_dp_csv)))
 
     print("\n── Abl 2: related vs. unrelated task pair under DP ──")
     all_rows.extend(run_abl2(args, sample_rate, prebuilt, decomp_pos_weight))
+
+    print("\n── Abl 3: embed_dim × DP interaction ──")
+    all_rows.extend(run_abl3(args, sample_rate, prebuilt, decomp_pos_weight))
 
     if not all_rows:
         print("[ablations_dp] No results — exiting.")
@@ -299,9 +362,15 @@ def main() -> None:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(all_rows[0].keys())
+    # union of all row keys to handle different column sets across ablations
+    fieldnames: list[str] = []
+    for row in all_rows:
+        for k in row:
+            if k not in fieldnames:
+                fieldnames.append(k)
     with open(out, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore",
+                                restval=float("nan"))
         writer.writeheader()
         writer.writerows(all_rows)
 
@@ -328,6 +397,15 @@ def _print_summary(rows: list[dict]) -> None:
             rho = grp["rho"].mean()
             inf = grp["inference_auroc_ihm"].mean()
             print(f"  {config:12s}  ρ={rho:.4f}  IHM inference AUC={inf:.4f}")
+
+    print("\n── Abl 3: embed_dim × DP (mean across seeds) ──")
+    abl3 = df[df["ablation"] == "abl3"]
+    if not abl3.empty:
+        for config, grp in abl3.groupby("config"):
+            ihm  = grp["val_ihm_auroc"].mean()
+            dec  = grp["val_decomp_auroc"].mean()
+            phen = grp["val_pheno_macro_auroc"].mean()
+            print(f"  {config:25s} IHM={ihm:.4f}  Decomp={dec:.4f}  Pheno={phen:.4f}")
 
 
 if __name__ == "__main__":

@@ -22,9 +22,12 @@ import matplotlib.pyplot as plt
 # Brand palette — 7 HEX codes
 _C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d"]
 
+_DISP = {"VFL-MTL": "PRISM"}  # model-name → display label
+
 PALETTE = {
     # Exp 1 — model variants
     "VFL-MTL":   _C[0],
+    "PRISM":     _C[0],   # display alias
     "ST-IHM":    _C[1],
     "ST-Decomp": _C[2],
     "ST-Pheno":  _C[3],
@@ -82,14 +85,14 @@ def main():
     args = parser.parse_args()
 
     rd = Path(args.results_dir)
-    exp1 = last_round(pd.read_csv(rd / "exp1.csv"))
-    exp2 = last_round(pd.read_csv(rd / "exp2.csv"))
-    exp3 = last_round(pd.read_csv(rd / "exp3.csv"))
-    exp4 = last_round(pd.read_csv(rd / "exp4.csv"))
+    exp1      = last_round(pd.read_csv(rd / "exp1.csv"))
+    exp2_split = last_round(pd.read_csv(rd / "exp2_split.csv")) if (rd / "exp2_split.csv").exists() else pd.DataFrame()
+    exp2      = last_round(pd.read_csv(rd / "exp2.csv"))
+    exp3      = last_round(pd.read_csv(rd / "exp3.csv"))
 
     fig, axes = plt.subplots(2, 4, figsize=(18, 8))
     fig.suptitle(
-        "VFL-MTL Preliminary Results — Validation Metrics, Final Round (mean ± std, 3 seeds)",
+        "PRISM Preliminary Results — Validation Metrics, Final Round (mean ± std, 3 seeds)",
         fontsize=12, fontweight="bold", y=1.01,
     )
 
@@ -99,8 +102,8 @@ def main():
     ax = axes[0, 0]
     ihm_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-IHM"])]
     mu, sd = agg_metric(ihm_models, "model", "val_ihm_auroc")
-    bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "IHM AUROC", "Exp1 · IHM AUROC\nVFL-MTL vs ST-IHM")
+    bar_group(ax, [_DISP.get(g, g) for g in mu.index.tolist()], mu.values, sd.values,
+              "IHM AUROC", "Exp1 · IHM AUROC\nPRISM vs ST-IHM")
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="chance")
     ax.legend(fontsize=7)
 
@@ -108,8 +111,8 @@ def main():
     ax = axes[0, 1]
     pheno_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-Pheno"])]
     mu, sd = agg_metric(pheno_models, "model", "val_pheno_macro_auroc")
-    bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "Pheno Macro-AUC", "Exp1 · Pheno Macro-AUC\nVFL-MTL vs ST-Pheno")
+    bar_group(ax, [_DISP.get(g, g) for g in mu.index.tolist()], mu.values, sd.values,
+              "Pheno Macro-AUC", "Exp1 · Pheno Macro-AUC\nPRISM vs ST-Pheno")
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8, label="chance")
     ax.legend(fontsize=7)
 
@@ -117,45 +120,51 @@ def main():
     ax = axes[1, 0]
     decomp_models = exp1[exp1["model"].isin(["VFL-MTL", "ST-Decomp"])]
     mu, sd = agg_metric(decomp_models, "model", "val_decomp_auroc")
-    bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "Decomp AUC-ROC", "Exp1 · Decomp AUC-ROC\nVFL-MTL vs ST-Decomp")
+    bar_group(ax, [_DISP.get(g, g) for g in mu.index.tolist()], mu.values, sd.values,
+              "Decomp AUC-ROC", "Exp1 · Decomp AUC-ROC\nPRISM vs ST-Decomp")
+
+    # ── Exp 2 (omitted) · IHM AUROC ──────────────────────────────────────────
+    ax = axes[0, 2]
+    if not exp2_split.empty and "val_ihm_auroc" in exp2_split.columns:
+        mu, sd = agg_metric(exp2_split, "split_config", "val_ihm_auroc")
+        bar_group(ax, mu.index.tolist(), mu.values, sd.values,
+                  "IHM AUROC", "Exp2 · IHM AUROC\nFeature Split Sensitivity", rotation=15)
+        ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
+    else:
+        ax.set_title("Exp2 · IHM AUROC\n(omitted)"); ax.set_visible(False)
+
+    # ── Exp 2 (omitted) · Pheno Macro-AUC ────────────────────────────────────
+    ax = axes[1, 1]
+    if not exp2_split.empty and "val_pheno_macro_auroc" in exp2_split.columns:
+        mu, sd = agg_metric(exp2_split, "split_config", "val_pheno_macro_auroc")
+        bar_group(ax, mu.index.tolist(), mu.values, sd.values,
+                  "Pheno Macro-AUC", "Exp2 · Pheno Macro-AUC\nFeature Split Sensitivity", rotation=15)
+        ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
+    else:
+        ax.set_visible(False)
 
     # ── Exp 2 · IHM AUROC ────────────────────────────────────────────────────
-    ax = axes[0, 2]
-    mu, sd = agg_metric(exp2, "split_config", "val_ihm_auroc")
+    ax = axes[0, 3]
+    mu, sd = agg_metric(exp2, "task_config", "val_ihm_auroc")
     bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "IHM AUROC", "Exp2 · IHM AUROC\nFeature Split Sensitivity", rotation=15)
+              "IHM AUROC", "Exp2 · IHM AUROC\nTask Relatedness", rotation=20)
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
 
     # ── Exp 2 · Pheno Macro-AUC ──────────────────────────────────────────────
-    ax = axes[1, 1]
-    mu, sd = agg_metric(exp2, "split_config", "val_pheno_macro_auroc")
-    bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "Pheno Macro-AUC", "Exp2 · Pheno Macro-AUC\nFeature Split Sensitivity", rotation=15)
-    ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
-
-    # ── Exp 3 · IHM AUROC ────────────────────────────────────────────────────
-    ax = axes[0, 3]
-    mu, sd = agg_metric(exp3, "task_config", "val_ihm_auroc")
-    bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "IHM AUROC", "Exp3 · IHM AUROC\nTask Relatedness", rotation=20)
-    ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
-
-    # ── Exp 3 · Pheno Macro-AUC ──────────────────────────────────────────────
     ax = axes[1, 2]
-    mu, sd = agg_metric(exp3, "task_config", "val_pheno_macro_auroc")
+    mu, sd = agg_metric(exp2, "task_config", "val_pheno_macro_auroc")
     bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "Pheno Macro-AUC", "Exp3 · Pheno Macro-AUC\nTask Relatedness", rotation=20)
+              "Pheno Macro-AUC", "Exp2 · Pheno Macro-AUC\nTask Relatedness", rotation=20)
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
 
-    # ── Exp 4 · IHM AUROC + elapsed time ─────────────────────────────────────
+    # ── Exp 3 · IHM AUROC + elapsed time ─────────────────────────────────────
     ax = axes[1, 3]
-    mu, sd = agg_metric(exp4, "n_sites", "val_ihm_auroc")
+    mu, sd = agg_metric(exp3, "n_sites", "val_ihm_auroc")
     bar_group(ax, mu.index.tolist(), mu.values, sd.values,
-              "IHM AUROC", "Exp4 · IHM AUROC\nScalability (n_sites)")
+              "IHM AUROC", "Exp3 · IHM AUROC\nScalability (n_sites)")
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.8)
 
-    mu_t, _ = agg_metric(exp4, "n_sites", "elapsed_s")
+    mu_t, _ = agg_metric(exp3, "n_sites", "elapsed_s")
     ax2 = ax.twinx()
     ax2.plot(np.arange(len(mu_t)), mu_t.values, color=_C[6],
              linestyle="--", marker="o", markersize=4, linewidth=1.2)
