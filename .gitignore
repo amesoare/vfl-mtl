@@ -9,6 +9,8 @@ dist/
 build/
 *.ipynb_checkpoints/
 data/
+!data/vertical_splits/
+!data/vertical_splits/**
 slurm-*.out
 slurm-*.err
 mimic3-benchmarks/
