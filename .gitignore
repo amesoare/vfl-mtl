@@ -1,35 +1,31 @@
-.env
-.DS_Store
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.egg-info/
-.eggs/
 dist/
 build/
 *.ipynb_checkpoints/
+
+# Generated outputs (reproducible from experiment scripts)
+figures/*.png
+figures/*.svg
+
+# Results (reproducible from experiment scripts — not redistributable)
+results/
+
+# Model checkpoints (large binaries)
+checkpoints/
+
+# SLURM logs and runtime logs
+logs/
+
+# Data (not redistributable — see data/DATA.md)
 data/
 !data/vertical_splits/
 !data/vertical_splits/**
-slurm-*.out
-slurm-*.err
 mimic3-benchmarks/
-checkpoints/
-*.pt
-snellius_best_practices.pdf
-docs/ThesisDesign_AmeliaSoare copy.pdf
-*.pdf
-# md files — only CLAUDE.md and the two implementation plans are tracked
-docs/methodology_paper1.md
-docs/references.bib
-docs/introduction_relatedwork.md
-docs/methodology_text.md
-docs/results_discussion_txt.md
-docs/suggestions.md
-docs/MethodologyExample.md
-figures/titles.md
-task_plan.md
-MIMIC3_data_aggreement.md
-PCMUmetric.md
-baselines/MARS-VFL/
-baselines/mars_vfl/
+data_prep/eicu_benchmark/
+
+# Editors / OS
+.DS_Store
+.env

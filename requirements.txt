@@ -11,5 +11,8 @@ seaborn>=0.13
 # Multi-label stratified splitting (iterative stratification for phenotyping labels)
 scikit-multilearn>=0.2.0
 
+# eICU_Benchmark dependency (replaces deprecated sklearn.externals.joblib)
+joblib>=1.3
+
 # Testing
 pytest>=8.0

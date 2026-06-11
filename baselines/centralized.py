@@ -35,20 +35,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from data_prep.dataset import (
     VFLSiteDataset, collate_fn,
     SITE_A_FEATURES, SITE_B_FEATURES, SITE_C_FEATURES, PHENO_LABEL_COLS,
+    EICU_SITE_A_FEATURES, EICU_SITE_B_FEATURES, EICU_SITE_C_FEATURES,
+    EICU_PHENO_LABEL_COLS,
 )
 from model.mmoe import MMoEServer
-from experiments.metrics import ihm_metrics, decomp_metrics, pheno_metrics
+from experiments.metrics import ihm_metrics, decomp_metrics, pheno_metrics, rlos_metrics
 
 
-_ALL_FEATURES = SITE_A_FEATURES + SITE_B_FEATURES + SITE_C_FEATURES
+_ALL_FEATURES      = SITE_A_FEATURES + SITE_B_FEATURES + SITE_C_FEATURES
+_ALL_FEATURES_EICU = EICU_SITE_A_FEATURES + EICU_SITE_B_FEATURES + EICU_SITE_C_FEATURES
 assert len(_ALL_FEATURES) == 14
+assert len(_ALL_FEATURES_EICU) == 13
 
 _EMBED_DIM = 192  # matches VFL-MTL server input (3 sites × 64); fair capacity comparison
 
 
-# ---------------------------------------------------------------------------
+
 # Encoder
-# ---------------------------------------------------------------------------
+
 
 class CentralizedEncoder(nn.Module):
     """Single LSTM on all 14 features → embed_dim."""
@@ -72,16 +76,12 @@ class CentralizedEncoder(nn.Module):
         return self.norm(self.proj(h_n[-1]))   # (B, embed_dim)
 
 
-# ---------------------------------------------------------------------------
+
 # Dataset — all 14 features + all three labels
-# ---------------------------------------------------------------------------
+
 
 class CentralizedDataset(torch.utils.data.Dataset):
-    """
-    Joins all three site datasets by aligned patient order.
-    All three VFLSiteDatasets share aligned_patient_ids.csv and are
-    guaranteed to iterate in the same subject order after filtering.
-    """
+    """Joins all three site VFLSiteDatasets by aligned patient order (stay-level intersection)."""
 
     def __init__(self, root: str | Path, split: str, max_seq_len: int = 48):
         root_p     = Path(root)
@@ -108,10 +108,6 @@ class CentralizedDataset(torch.utils.data.Dataset):
             timeseries_root=bench_dir / "phenotyping",
             max_seq_len=max_seq_len, task_type="multilabel")
 
-        # Build stay-level intersection so each row is the same ICU episode across all three sites.
-        # IHM (≥48h), Decompensation (≥24h), and Phenotyping (≥48h+dx) have different stay
-        # populations for the same patients, so subject-level alignment yields unequal sizes.
-        # No data reprocessing needed — intersection is computed at runtime.
         common = sorted(set(self._a.stays) & set(self._b.stays) & set(self._c.stays))
         self._idx_a = {s: i for i, s in enumerate(self._a.stays)}
         self._idx_b = {s: i for i, s in enumerate(self._b.stays)}
@@ -134,25 +130,67 @@ def _collate(batch):
             torch.stack(yl), torch.stack(yp))
 
 
-# ---------------------------------------------------------------------------
-# Synthetic loaders
-# ---------------------------------------------------------------------------
+class CentralizedDatasetEICU(torch.utils.data.Dataset):
+    """Tabular join of three eICU site CSVs on patientunitstayid."""
 
-def _synthetic_loaders(batch_size: int, seed: int) -> dict:
+    def __init__(self, root: str | Path, split: str):
+        splits_dir = Path(root) / "data" / "eicu_vertical_splits"
+        aligned    = pd.read_csv(splits_dir / "aligned_patient_ids_eicu.csv")
+        pids       = set(aligned[aligned["split"] == split]["patientunitstayid"])
+
+        def _filt(fname):
+            df = pd.read_csv(splits_dir / fname)
+            return df[df["patientunitstayid"].isin(pids) & (df["split"] == split)]
+
+        a = _filt("site_A_eicu.csv")
+        b = _filt("site_B_eicu.csv")
+        c = _filt("site_C_eicu.csv")
+
+        m = (a[["patientunitstayid", "y_ihm"] + EICU_SITE_A_FEATURES]
+               .merge(b[["patientunitstayid", "y_rlos"] + EICU_SITE_B_FEATURES],
+                      on="patientunitstayid")
+               .merge(c[["patientunitstayid"] + EICU_SITE_C_FEATURES + EICU_PHENO_LABEL_COLS],
+                      on="patientunitstayid"))
+
+        self._x      = m[_ALL_FEATURES_EICU].values.astype(np.float32)
+        self._y_ihm  = m["y_ihm"].values.astype(np.float32)
+        self._y_rlos = m["y_rlos"].values.astype(np.float32)
+        self._y_pheno = m[EICU_PHENO_LABEL_COLS].values.astype(np.float32)
+
+    def __len__(self):
+        return len(self._x)
+
+    def __getitem__(self, idx):
+        x    = torch.from_numpy(self._x[idx:idx+1])  # (1, 13) — tabular single timestep
+        mask = torch.ones(1)
+        return (x, mask,
+                torch.tensor(self._y_ihm[idx]),
+                torch.tensor(self._y_rlos[idx]),
+                torch.from_numpy(self._y_pheno[idx]))
+
+
+
+# Synthetic loaders
+
+
+def _synthetic_loaders(batch_size: int, seed: int, dataset: str = "mimic") -> dict:
     g = torch.Generator(); g.manual_seed(seed)
+    n_feat = 13 if dataset == "eicu" else 14
+    T      = 1  if dataset == "eicu" else 48
     def _make(n):
-        x   = torch.randn(n, 48, 14)
-        m   = torch.ones(n, 48)
+        x   = torch.randn(n, T, n_feat)
+        m   = torch.ones(n, T)
         yi  = torch.randint(0, 2, (n,),    generator=g).float()
-        yd  = torch.randint(0, 2, (n,),    generator=g).float()
+        yd  = (torch.rand(n, generator=g) * 10.0 if dataset == "eicu"
+               else torch.randint(0, 2, (n,), generator=g).float())
         yp  = torch.randint(0, 2, (n, 25), generator=g).float()
         return DataLoader(TensorDataset(x, m, yi, yd, yp), batch_size=batch_size)
     return {"train": _make(256), "val": _make(64)}
 
 
-# ---------------------------------------------------------------------------
+
 # Training
-# ---------------------------------------------------------------------------
+
 
 def _weighted_bce(pred: torch.Tensor, target: torch.Tensor, pos_weight: float) -> torch.Tensor:
     w = pos_weight * target + (1.0 - target)
@@ -163,26 +201,31 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
                       seed: int, use_synthetic: bool, num_workers: int = 0,
                       hidden_dim: int = 128, prebuilt_loaders: dict = None,
                       patience: int = 10, ckpt_dir: str | None = None,
-                      decomp_pos_weight: float = 0.0) -> list[dict]:
+                      decomp_pos_weight: float = 0.0,
+                      dataset: str = "mimic") -> list[dict]:
     torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    # Compute pos_weight for decompensation task
-    if use_synthetic:
-        _decomp_pw = 1.0
-    elif decomp_pos_weight > 0.0:
-        _decomp_pw = decomp_pos_weight
-    else:
-        splits_dir = Path(root) / "data" / "vertical_splits"
-        _b = pd.read_csv(splits_dir / "site_B_labs.csv", usecols=["y_decomp", "split"])
-        pos_rate = float(_b[_b["split"] == "train"]["y_decomp"].mean())
-        _decomp_pw = (1.0 - pos_rate) / pos_rate
-        print(f"[centralized] decomp pos_weight={_decomp_pw:.1f}  (pos_rate={pos_rate:.3%})")
+    _eicu = (dataset == "eicu")
 
-    encoder  = CentralizedEncoder(hidden_dim=hidden_dim).to(device)
-    mmoe     = MMoEServer(input_dim=_EMBED_DIM).to(device)
+    # Compute pos_weight for MIMIC decompensation (skip for eICU regression)
+    _decomp_pw = 1.0
+    if not _eicu:
+        if use_synthetic or decomp_pos_weight > 0.0:
+            _decomp_pw = 1.0 if use_synthetic else decomp_pos_weight
+        else:
+            splits_dir = Path(root) / "data" / "vertical_splits"
+            _b = pd.read_csv(splits_dir / "site_B_labs.csv", usecols=["y_decomp", "split"])
+            pos_rate   = float(_b[_b["split"] == "train"]["y_decomp"].mean())
+            _decomp_pw = (1.0 - pos_rate) / pos_rate
+            print(f"[centralized] decomp pos_weight={_decomp_pw:.1f}  (pos_rate={pos_rate:.3%})")
+
+    n_feat   = 13 if _eicu else 14
+    encoder  = CentralizedEncoder(input_dim=n_feat, hidden_dim=hidden_dim).to(device)
+    mmoe     = MMoEServer(input_dim=_EMBED_DIM,
+                          task_types={"decomp": "regression"} if _eicu else None).to(device)
     opt      = torch.optim.Adam(
         list(encoder.parameters()) + list(mmoe.parameters()), lr=lr)
     ihm_fn   = nn.BCELoss()
@@ -191,10 +234,11 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
     if prebuilt_loaders is not None:
         loaders = prebuilt_loaders
     elif use_synthetic:
-        loaders = _synthetic_loaders(batch_size, seed)
+        loaders = _synthetic_loaders(batch_size, seed, dataset)
     else:
+        _ds_cls = CentralizedDatasetEICU if _eicu else CentralizedDataset
         loaders = {
-            split: DataLoader(CentralizedDataset(root, split),
+            split: DataLoader(_ds_cls(root, split),
                               batch_size=batch_size, shuffle=(split == "train"),
                               collate_fn=_collate, num_workers=num_workers,
                               pin_memory=True)
@@ -215,9 +259,13 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
 
             emb  = encoder(x, mask)
             out  = mmoe(emb)
-            loss = (ihm_fn(out["ihm"].squeeze(-1), y_ihm)
-                    + _weighted_bce(out["decomp"].squeeze(-1), y_decomp.float(), _decomp_pw)
-                    + pheno_fn(out["pheno"], y_pheno))
+            if _eicu:
+                decomp_loss = torch.nn.functional.mse_loss(
+                    out["decomp"].squeeze(-1), y_decomp.float())
+            else:
+                decomp_loss = _weighted_bce(
+                    out["decomp"].squeeze(-1), y_decomp.float(), _decomp_pw)
+            loss = ihm_fn(out["ihm"].squeeze(-1), y_ihm) + decomp_loss + pheno_fn(out["pheno"], y_pheno)
             opt.zero_grad(); loss.backward(); opt.step()
             total_loss += loss.item(); nb += 1
 
@@ -233,11 +281,14 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
                 decomp_p.append(out["decomp"].squeeze(-1).cpu()); decomp_l.append(y_decomp)
                 pheno_p.append(out["pheno"].cpu());            pheno_l.append(y_pheno)
 
-        m_ihm    = ihm_metrics(torch.cat(ihm_l).numpy(),    torch.cat(ihm_p).numpy())
-        m_decomp = decomp_metrics(torch.cat(decomp_l).numpy(), torch.cat(decomp_p).numpy())
-        m_pheno  = pheno_metrics(torch.cat(pheno_l).numpy(),  torch.cat(pheno_p).numpy())
-
-        score = (m_ihm["auc_roc"] + m_decomp["auc_roc"] + m_pheno["macro_auc"]) / 3
+        m_ihm   = ihm_metrics(torch.cat(ihm_l).numpy(), torch.cat(ihm_p).numpy())
+        m_pheno = pheno_metrics(torch.cat(pheno_l).numpy(), torch.cat(pheno_p).numpy())
+        if _eicu:
+            m_decomp = rlos_metrics(torch.cat(decomp_l).numpy(), torch.cat(decomp_p).numpy())
+            score    = (m_ihm["auc_roc"] + m_pheno["macro_auc"]) / 2
+        else:
+            m_decomp = decomp_metrics(torch.cat(decomp_l).numpy(), torch.cat(decomp_p).numpy())
+            score    = (m_ihm["auc_roc"] + m_decomp["auc_roc"] + m_pheno["macro_auc"]) / 3
         if score > best_score:
             best_score = score
             no_improve = 0
@@ -254,12 +305,13 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
         else:
             no_improve += 1
 
+        decomp_prefix = "val_rlos_" if _eicu else "val_decomp_"
         rows.append({"model": "centralized_oracle", "epoch": epoch,
                      "train_loss": total_loss / max(nb, 1),
                      "elapsed_s": time.perf_counter() - t0, "seed": seed,
-                     **{f"val_ihm_{k}":    v for k, v in m_ihm.items()},
-                     **{f"val_decomp_{k}": v for k, v in m_decomp.items()},
-                     **{f"val_pheno_{k}":  v for k, v in m_pheno.items()}})
+                     **{f"val_ihm_{k}":       v for k, v in m_ihm.items()},
+                     **{f"{decomp_prefix}{k}": v for k, v in m_decomp.items()},
+                     **{f"val_pheno_{k}":     v for k, v in m_pheno.items()}})
 
         if no_improve >= patience:
             print(f"  Early stop at epoch {epoch} (best mean AUC={best_score:.4f})")
@@ -268,9 +320,9 @@ def train_centralized(root: str, n_epochs: int, lr: float, batch_size: int,
     return rows
 
 
-# ---------------------------------------------------------------------------
+
 # Entry point
-# ---------------------------------------------------------------------------
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -280,15 +332,21 @@ def main():
     p.add_argument("--batch_size",    type=int,   default=64)
     p.add_argument("--seeds",         type=int,   nargs="+", default=[42, 123, 7])
     p.add_argument("--num_workers",   type=int,   default=0)
-    p.add_argument("--output",        default="results/centralized.csv")
+    p.add_argument("--output",        default=None)
     p.add_argument("--use_synthetic", action="store_true")
     p.add_argument("--patience",      type=int,   default=10)
     p.add_argument("--ckpt_dir",      default="checkpoints")
+    p.add_argument("--dataset",       default="mimic", choices=["mimic", "eicu"])
     args = p.parse_args()
+    _prefix = "eicu_" if args.dataset == "eicu" else ""
+    if args.output is None:
+        args.output = f"results/{_prefix}centralized.csv"
+    if args.use_synthetic:
+        _p = Path(args.output); args.output = str(_p.parent / f"smoketest_{_p.name}")
 
-    # Build real dataset once — preload is expensive, reuse across seeds
+    _ds_cls = CentralizedDatasetEICU if args.dataset == "eicu" else CentralizedDataset
     prebuilt = (None if args.use_synthetic else {
-        split: DataLoader(CentralizedDataset(args.root, split),
+        split: DataLoader(_ds_cls(args.root, split),
                           batch_size=args.batch_size, shuffle=(split == "train"),
                           collate_fn=_collate, num_workers=args.num_workers,
                           pin_memory=True)
@@ -299,7 +357,8 @@ def main():
         rows = train_centralized(args.root, args.n_epochs, args.lr,
                                  args.batch_size, seed, args.use_synthetic,
                                  args.num_workers, prebuilt_loaders=prebuilt,
-                                 patience=args.patience, ckpt_dir=args.ckpt_dir)
+                                 patience=args.patience, ckpt_dir=args.ckpt_dir,
+                                 dataset=args.dataset)
         all_rows.extend(rows)
         print(f"seed={seed}: " + str({k: round(v, 4) for k, v in rows[-1].items()
                                       if k.startswith("val_")}))

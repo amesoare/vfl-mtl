@@ -48,9 +48,13 @@ from data_prep.dataset import (
     SITE_B_FEATURES,
     SITE_C_FEATURES,
     PHENO_LABEL_COLS,
+    EICU_SITE_A_FEATURES,
+    EICU_SITE_B_FEATURES,
+    EICU_SITE_C_FEATURES,
+    EICU_PHENO_LABEL_COLS,
 )
 from model.encoder import SiteEncoder
-from experiments.metrics import ihm_metrics, decomp_metrics, pheno_metrics
+from experiments.metrics import ihm_metrics, decomp_metrics, pheno_metrics, rlos_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +88,33 @@ _SITE_CFG = {
     },
 }
 
+_SITE_CFG_EICU = {
+    "A": {
+        "input_dim":    len(EICU_SITE_A_FEATURES),
+        "feature_cols": EICU_SITE_A_FEATURES,
+        "label_col":    "y_ihm",
+        "task_type":    "binary",
+        "site_csv":     "site_A_eicu.csv",
+        "ts_subdir":    None,
+    },
+    "B": {
+        "input_dim":    len(EICU_SITE_B_FEATURES),
+        "feature_cols": EICU_SITE_B_FEATURES,
+        "label_col":    "y_rlos",
+        "task_type":    "regression",
+        "site_csv":     "site_B_eicu.csv",
+        "ts_subdir":    None,
+    },
+    "C": {
+        "input_dim":    len(EICU_SITE_C_FEATURES),
+        "feature_cols": EICU_SITE_C_FEATURES,
+        "label_col":    EICU_PHENO_LABEL_COLS,
+        "task_type":    "multilabel",
+        "site_csv":     "site_C_eicu.csv",
+        "ts_subdir":    None,
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Local task heads
@@ -94,8 +125,10 @@ class _LocalHead(nn.Module):
         super().__init__()
         if task_type == "binary":
             self.head = nn.Sequential(nn.Linear(embed_dim, 1), nn.Sigmoid())
+        elif task_type == "regression":
+            self.head = nn.Linear(embed_dim, 1)
         elif task_type == "los_bins":
-            self.head = nn.Linear(embed_dim, 10)      # logits
+            self.head = nn.Linear(embed_dim, 10)
         else:                                           # multilabel
             self.head = nn.Sequential(nn.Linear(embed_dim, 25), nn.Sigmoid())
 
@@ -108,9 +141,9 @@ class _LocalHead(nn.Module):
 # ---------------------------------------------------------------------------
 
 def _loss_fn(task_type: str, pos_weight: float = 1.0):
+    if task_type == "regression":
+        return nn.MSELoss()
     if task_type == "binary" and pos_weight != 1.0:
-        # pos_weight upweights positive samples: weight = pos_weight * y + (1 - y)
-        # Equivalent to BCEWithLogitsLoss(pos_weight=...) but works on Sigmoid outputs.
         pw = pos_weight
         return lambda pred, target: nn.functional.binary_cross_entropy(
             pred, target, weight=pw * target + (1.0 - target)
@@ -125,17 +158,20 @@ def _loss_fn(task_type: str, pos_weight: float = 1.0):
 # Synthetic loaders (smoke-test, no MIMIC required)
 # ---------------------------------------------------------------------------
 
-def _synthetic_loaders(site: str, batch_size: int, seed: int) -> dict[str, DataLoader]:
-    cfg = _SITE_CFG[site]
+def _synthetic_loaders(site: str, batch_size: int, seed: int,
+                       dataset: str = "mimic") -> dict[str, DataLoader]:
+    cfg = _SITE_CFG_EICU[site] if dataset == "eicu" else _SITE_CFG[site]
     n_train, n_val = 256, 64
     rng = torch.Generator(); rng.manual_seed(seed)
 
     def _make(n):
-        x    = torch.randn(n, 48, cfg["input_dim"])
-        mask = torch.ones(n, 48)
+        x    = torch.randn(n, 1 if dataset == "eicu" else 48, cfg["input_dim"])
+        mask = torch.ones(n, 1 if dataset == "eicu" else 48)
         if cfg["task_type"] == "binary":
             y = torch.randint(0, 2, (n,), generator=rng).float()
-        elif cfg["task_type"] == "multilabel":
+        elif cfg["task_type"] == "regression":
+            y = torch.rand(n, generator=rng) * 10.0
+        else:  # multilabel
             y = torch.randint(0, 2, (n, 25), generator=rng).float()
         from torch.utils.data import TensorDataset
         return DataLoader(TensorDataset(x, mask, y), batch_size=batch_size)
@@ -148,13 +184,20 @@ def _synthetic_loaders(site: str, batch_size: int, seed: int) -> dict[str, DataL
 # ---------------------------------------------------------------------------
 
 def _real_loaders(site: str, root: str, batch_size: int,
-                  num_workers: int) -> dict[str, DataLoader]:
-    cfg        = _SITE_CFG[site]
-    root_p     = Path(root)
-    splits_dir = root_p / "data" / "vertical_splits"
-    bench_dir  = root_p / "data" / "mimic3-benchmarks" / "data"
-    aligned    = splits_dir / "aligned_patient_ids.csv"
-    ts_root    = bench_dir / cfg["ts_subdir"]
+                  num_workers: int, dataset: str = "mimic") -> dict[str, DataLoader]:
+    if dataset == "eicu":
+        cfg        = _SITE_CFG_EICU[site]
+        splits_dir = Path(root) / "data" / "eicu_vertical_splits"
+        aligned    = splits_dir / "aligned_patient_ids_eicu.csv"
+        ts_root    = None
+        id_col     = "patientunitstayid"
+    else:
+        cfg        = _SITE_CFG[site]
+        splits_dir = Path(root) / "data" / "vertical_splits"
+        bench_dir  = Path(root) / "data" / "mimic3-benchmarks" / "data"
+        aligned    = splits_dir / "aligned_patient_ids.csv"
+        ts_root    = bench_dir / cfg["ts_subdir"]
+        id_col     = "subject_id"
 
     loaders = {}
     for split in ("train", "val"):
@@ -166,6 +209,7 @@ def _real_loaders(site: str, root: str, batch_size: int,
             aligned_ids_csv = aligned,
             timeseries_root = ts_root,
             task_type       = cfg["task_type"],
+            id_col          = id_col,
         )
         loaders[split] = DataLoader(
             ds,
@@ -196,7 +240,8 @@ def train_local(
     prebuilt_loaders: dict = None,
     patience:         int = 10,
     ckpt_dir:         str | None = None,
-    decomp_pos_weight: float = 0.0,  # 0.0 = auto-compute from CSV (Site B only)
+    decomp_pos_weight: float = 0.0,
+    dataset:          str = "mimic",
 ) -> list[dict]:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -206,12 +251,12 @@ def train_local(
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    cfg       = _SITE_CFG[site]
+    cfg       = _SITE_CFG_EICU[site] if dataset == "eicu" else _SITE_CFG[site]
     task_type = cfg["task_type"]
 
-    # Determine pos_weight for Site B decompensation
+    # Determine pos_weight for MIMIC Site B decompensation (skip for regression)
     pw = 1.0
-    if site == "B" and not use_synthetic:
+    if site == "B" and dataset == "mimic" and not use_synthetic:
         if decomp_pos_weight > 0.0:
             pw = decomp_pos_weight
         else:
@@ -238,12 +283,10 @@ def train_local(
     if prebuilt_loaders is not None:
         loaders = prebuilt_loaders
     elif use_synthetic:
-        loaders = _synthetic_loaders(site, batch_size, seed)
+        loaders = _synthetic_loaders(site, batch_size, seed, dataset)
     else:
-        loaders = _real_loaders(site, root, batch_size, num_workers)
+        loaders = _real_loaders(site, root, batch_size, num_workers, dataset)
 
-    # early stopping state
-    primary = "auc_roc" if task_type == "binary" else "macro_auc"
     best_score, no_improve, best_state = -1.0, 0, None
 
     rows = []
@@ -260,7 +303,7 @@ def train_local(
             emb  = encoder(x, mask)
             pred = head(emb)
 
-            if task_type == "binary":
+            if task_type in ("binary", "regression"):
                 loss = loss_fn(pred.squeeze(-1), y)
             else:
                 loss = loss_fn(pred, y)
@@ -284,14 +327,18 @@ def train_local(
         preds  = torch.cat(all_preds)
         labels = torch.cat(all_labels)
 
-        if task_type == "binary" and site == "A":
+        if task_type == "regression":
+            metrics = rlos_metrics(labels.numpy(), preds.squeeze(-1).numpy())
+            score   = -metrics["mae"]  # lower MAE = better; negate for maximisation
+        elif task_type == "binary" and site == "A":
             metrics = ihm_metrics(labels.numpy(), preds.squeeze(-1).numpy())
-        elif task_type == "binary" and site == "B":
+            score   = metrics["auc_roc"]
+        elif task_type == "binary":
             metrics = decomp_metrics(labels.numpy(), preds.squeeze(-1).numpy())
+            score   = metrics["auc_roc"]
         else:
             metrics = pheno_metrics(labels.numpy(), preds.numpy())
-
-        score = metrics[primary]
+            score   = metrics["macro_auc"]
         if score > best_score:
             best_score = score
             no_improve = 0
@@ -323,7 +370,7 @@ def train_local(
         })
 
         if no_improve >= patience:
-            print(f"  Early stop at epoch {epoch} (best {primary}={best_score:.4f})")
+            print(f"  Early stop at epoch {epoch} (best score={best_score:.4f})")
             break
 
     return rows
@@ -346,12 +393,16 @@ def main():
     parser.add_argument("--use_synthetic", action="store_true")
     parser.add_argument("--patience",      type=int,   default=10)
     parser.add_argument("--ckpt_dir",      default="checkpoints")
+    parser.add_argument("--dataset",       default="mimic", choices=["mimic", "eicu"])
     args = parser.parse_args()
 
-    out = args.output or f"results/local_only_{args.site}.csv"
-    # Build real dataset once — preload is expensive, reuse across seeds
+    _prefix = "eicu_" if args.dataset == "eicu" else ""
+    out = args.output or f"results/{_prefix}local_only_{args.site}.csv"
+    if args.use_synthetic:
+        _p = Path(out); out = str(_p.parent / f"smoketest_{_p.name}")
     prebuilt = (None if args.use_synthetic
-                else _real_loaders(args.site, args.root, args.batch_size, args.num_workers))
+                else _real_loaders(args.site, args.root, args.batch_size,
+                                   args.num_workers, args.dataset))
 
     all_rows = []
     for seed in args.seeds:
@@ -367,6 +418,7 @@ def main():
             prebuilt_loaders = prebuilt,
             patience         = args.patience,
             ckpt_dir         = args.ckpt_dir,
+            dataset          = args.dataset,
         )
         all_rows.extend(rows)
         print(f"site={args.site} seed={seed}: last val metrics = "

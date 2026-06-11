@@ -1,15 +1,4 @@
-"""
-fl/client.py — VFL client: local encoder for one hospital site.
-
-Training protocol per batch:
-  1. forward()         — run LSTM, return detached embedding to server
-  2. (server computes loss and gradients)
-  3. receive_gradient() — apply server gradient through local LSTM, update weights
-
-Detaching: the embedding returned to the server has its autograd link to the LSTM
-severed. The server computes gradients w.r.t. this vector, then hands them back.
-receive_gradient() uses those as the starting point for local backprop.
-"""
+"""fl/client.py — VFL client: local LSTM encoder for one hospital site."""
 
 from __future__ import annotations
 
@@ -20,17 +9,6 @@ from model.encoder import SiteEncoder
 
 
 class VFLClient:
-    """
-    Parameters
-    ----------
-    input_dim  : number of features at this site (7 / 4 / 3)
-    hidden_dim : LSTM hidden size
-    num_layers : stacked LSTM layers
-    embed_dim  : embedding size sent to server at the cut layer
-    dropout    : dropout between LSTM layers
-    lr         : local Adam learning rate
-    device     : cpu or cuda
-    """
 
     def __init__(
         self,
@@ -53,32 +31,19 @@ class VFLClient:
         self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=lr)
         self._local_embedding: Tensor | None = None  # kept for backward pass
 
-    # ------------------------------------------------------------------
-
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        """
-        Run encoder; return a detached copy of the embedding for the server.
-        The original (graph-linked) tensor is stored for receive_gradient().
-
-        Returns: (B, embed_dim)
-        """
+        """Run encoder; return detached embedding (B, embed_dim) for the server."""
         self.encoder.train()
         self._local_embedding = self.encoder(x.to(self.device), mask.to(self.device))
         return self._local_embedding.detach().requires_grad_(True)
 
     def receive_gradient(self, grad: Tensor) -> None:
-        """
-        Backprop the server's gradient through the local encoder and update weights.
-
-        DP hook (Paper 2): subclass and override here to clip/add noise to grad.
-        """
+        """Backprop server gradient through local encoder and update weights."""
         assert self._local_embedding is not None, "call forward() first"
         self.optimizer.zero_grad()
         self._local_embedding.backward(grad.to(self.device))
         self.optimizer.step()
         self._local_embedding = None
-
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def eval_forward(self, x: Tensor, mask: Tensor) -> Tensor:
@@ -86,8 +51,6 @@ class VFLClient:
         self.encoder.eval()
         return self.encoder(x.to(self.device), mask.to(self.device))
 
-    # ------------------------------------------------------------------
-    # FedAvg parameter access
 
     def get_encoder_params(self) -> dict:
         return {k: v.clone() for k, v in self.encoder.state_dict().items()}

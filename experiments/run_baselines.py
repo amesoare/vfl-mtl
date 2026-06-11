@@ -254,6 +254,8 @@ def main():
                    help="Path to exp1.csv produced by run_exp1.py")
     p.add_argument("--output",       default="results/baselines_comparison.csv")
     args = p.parse_args()
+    if args.use_synthetic:
+        _p = Path(args.output); args.output = str(_p.parent / f"smoketest_{_p.name}")
 
     all_rows: list[dict] = []
 

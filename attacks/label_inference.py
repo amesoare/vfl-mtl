@@ -1,32 +1,11 @@
 """
-attacks/label_inference.py — Label inference attack on VFL cut-layer embeddings.
+attacks/label_inference.py — Linear-probe label inference attack on VFL cut-layer embeddings.
 
-Threat model (honest-but-curious server):
-  The server observes all cut-layer embeddings z_A, z_B, z_C.
-  It trains a linear probe to infer each active party's task labels
-  from those embeddings alone (without access to raw features).
-
-Attack:
-  - Probe 1: z_A (Site A encoder output) → y_ihm  (binary, Site A label)
-  - Probe 2: z_C (Site C encoder output) → y_pheno (25 phenotype labels, Site C)
-  Train probe on training-set embeddings; evaluate on validation-set embeddings.
-
-Metrics:
-  - IHM: accuracy + AUC-ROC  (target under sufficient DP: accuracy ≈ prevalence ~10%)
-  - Pheno: macro-AUC across 25 labels (target: ≈ 0.50)
-
-For each (epsilon_level, mode, seed) in results/privacy_utility.csv:
-  1. Reconstruct model from TrainConfig defaults
-  2. Load checkpoint from checkpoints/ (falls back to fresh model if absent)
-  3. Extract train + test embeddings via VFLClient.eval_forward()
-  4. Fit LogisticRegression probe; report metrics on test set
-
+Trains LR probes (z_A→y_ihm, z_C→y_pheno) at each ε level; target under DP: AUC≈0.50.
 Output: results/label_inference.csv
-  columns: epsilon_level, mode, seed, task, accuracy, auroc
 
-Usage
------
-  python attacks/label_inference.py --use_synthetic --n_rounds 3
+Usage:
+  python attacks/label_inference.py --use_synthetic
   python attacks/label_inference.py --splits_dir data/vertical_splits
 """
 
@@ -50,9 +29,9 @@ from fl.client import VFLClient
 from fl.server import VFLServer
 from train import make_synthetic_loaders
 
-# ---------------------------------------------------------------------------
+
 # Constants matching privacy_utility_curves.py
-# ---------------------------------------------------------------------------
+
 
 SEEDS         = [42, 123, 7]
 EPSILON_LEVELS = ["inf", "10.0", "5.0", "2.0", "1.0", "0.5"]
@@ -60,9 +39,9 @@ EMBED_DIM     = 64
 SITE_INPUT_DIMS = {"A": 7, "B": 4, "C": 3}
 
 
-# ---------------------------------------------------------------------------
+
 # Helpers
-# ---------------------------------------------------------------------------
+
 
 def _ckpt_path(ckpt_dir: str, eps_label: str, mode: str, seed: int) -> Path:
     if str(eps_label) == "inf":
@@ -99,14 +78,6 @@ def _extract_embeddings(
     loaders: dict,
     device: torch.device,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """
-    Run eval_forward over all batches in loaders.
-
-    Returns
-    -------
-    embeddings : {'A': (N, 64), 'B': (N, 64), 'C': (N, 64)}
-    labels     : {'ihm': (N,), 'pheno': (N, 25)}
-    """
     emb_lists:   dict[str, list] = {"A": [], "B": [], "C": []}
     label_lists: dict[str, list] = {"ihm": [], "pheno": []}
 
@@ -132,18 +103,7 @@ def run_label_inference(
     z_val:   dict[str, np.ndarray],
     y_val:   dict[str, np.ndarray],
 ) -> list[dict]:
-    """
-    Train LR probes and return per-task attack metrics.
-
-    Parameters
-    ----------
-    z_train / z_val : {'A': (N, 64), ...}
-    y_train / y_val : {'ihm': (N,), 'pheno': (N, 25)}
-
-    Returns
-    -------
-    List of dicts, one per attacked task: {task, accuracy, auroc}
-    """
+    """Train LR probes and return per-task attack metrics ({task, accuracy, auroc})."""
     results = []
 
     # ---- IHM: binary probe on z_A ----
@@ -186,9 +146,9 @@ def run_label_inference(
     return results
 
 
-# ---------------------------------------------------------------------------
+
 # Per-experiment runner
-# ---------------------------------------------------------------------------
+
 
 def _run_one(
     eps_label: str,
@@ -204,10 +164,7 @@ def _run_one(
     device: torch.device,
     split: str = "test",
 ) -> list[dict]:
-    """
-    Extract embeddings for one (eps_label, mode, seed) config and run attack.
-    Returns list of result rows (one per task).
-    """
+    """Extract embeddings for one (eps_label, mode, seed) config and run the probe attack."""
     torch.manual_seed(seed)
     clients, server = _build_clients_and_server(device)
 
@@ -239,9 +196,9 @@ def _run_one(
     return task_rows
 
 
-# ---------------------------------------------------------------------------
+
 # Main
-# ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(

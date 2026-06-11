@@ -1,17 +1,16 @@
 """
-figures/privacy_utility_plot.py — Figure 1: Privacy-Utility Curves.
+figures/privacy_utility_plot.py — Privacy-Utility Curves (MIMIC).
 
-Three-panel line plot (one per task: IHM / Decomp / Pheno).
-  x-axis: ε ∈ {0.5, 1, 2, 5, 10, ∞} (log scale)
-  y-axis: mean AUC-ROC ± std across seeds
-  Two lines: uniform σ vs. task-stratified σ
+Three stacked panels (IHM / Decomp / Pheno).
+  x-axis: ε ∈ {0.5, 1, 2, 5, 10, ∞}
+  y-axis: AUC-ROC per seed trace + mean line
+  Two conditions: uniform σ vs. task-stratified σ
   Horizontal dashed line: clinical utility floor
-  Vertical marker: ε* — crossing point below the floor
 
 Usage:
     python figures/privacy_utility_plot.py \
-        --input results/privacy_utility.csv \
-        --output figures/privacy_utility.png
+        --input results/test_results_dp.csv \
+        --output figures/privacy_utility_test.png
 """
 
 import argparse
@@ -23,20 +22,21 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 plt.rcParams.update({
     "figure.dpi":        150,
-    "font.size":         11,
+    "font.size":         15,
     "font.family":       "serif",
     "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":    12,
+    "axes.titlesize":    17,
     "axes.titleweight":  "normal",
-    "axes.labelsize":    11,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   10,
+    "axes.labelsize":    15,
+    "xtick.labelsize":   14,
+    "ytick.labelsize":   14,
+    "legend.fontsize":   12,
 })
 
 # Brand palette — matches plot_results_summary.py
@@ -81,82 +81,140 @@ def _find_eps_star(means: pd.Series, floor: float, mode: str) -> float | None:
     return None
 
 
+def _plot_privacy(df: pd.DataFrame, output: Path,
+                  task_cols: dict[str, str]) -> None:
+    """Privacy-utility figure: seed traces + summary lines, no shading.
+
+    Layout: three stacked panels (IHM / Decomp / Pheno), one per row.
+    Uniform σ  — faint grey seed lines + dots connecting the same seed across ε;
+                  solid black mean line.
+    Stratified σ — faint red seed dots; solid red mean dots.
+    Clinical floor: dashed grey horizontal line with value annotated above it.
+    Single shared legend at top-right of top panel: Uniform σ / Stratified σ / Clinical floor.
+    """
+    UNIFORM_COLOR = "#1a1a1a"
+    STRAT_COLOR   = "#c0392b"
+    FLOOR_COLOR   = "#888888"
+
+    SEED_STYLE: dict[str, dict] = {
+        "uniform":    {"color": UNIFORM_COLOR, "alpha_line": 0.18, "alpha_dot": 0.30},
+        "stratified": {"color": STRAT_COLOR,   "alpha_line": 0.15, "alpha_dot": 0.28},
+    }
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 16), sharex=True)
+    fig.suptitle(
+        "AUC-ROC vs. Privacy Budget ε",
+        fontsize=35, fontweight="normal",
+    )
+
+    legend_handles = {}
+
+    for ax, (task_name, task_col) in zip(axes, task_cols.items()):
+        floor = CLINICAL_FLOORS[task_name]
+
+        for mode in ["uniform", "stratified"]:
+            mode_df = df[df["mode"] == mode]
+            if mode_df.empty or task_col not in mode_df.columns:
+                continue
+
+            style      = SEED_STYLE[mode]
+            is_uniform = mode == "uniform"
+
+            seeds = list(mode_df["seed"].unique())
+            n_seeds = len(seeds)
+            jitters = np.linspace(-0.18, 0.18, n_seeds) if n_seeds > 1 else [0.0]
+            for seed, jitter in zip(seeds, jitters):
+                seed_df = mode_df[mode_df["seed"] == seed].sort_values("epsilon_level")
+                x_s, y_s = [], []
+                for _, row in seed_df.iterrows():
+                    eps = row["epsilon_level"]
+                    val = row[task_col]
+                    if eps in EPS_ORDER and not np.isnan(val):
+                        x_s.append(EPS_ORDER.index(eps))
+                        y_s.append(float(val))
+                if x_s:
+                    x_jit = [x + jitter for x in x_s]
+                    ax.plot(x_jit, y_s, color=style["color"],
+                            alpha=style["alpha_line"], linewidth=1.1, zorder=2)
+                    ax.scatter(x_jit, y_s, color=style["color"], s=30,
+                               alpha=style["alpha_dot"], linewidths=0, zorder=3)
+
+            eps_x_list, mu_list = [], []
+            for eps in EPS_ORDER:
+                sub = mode_df[mode_df["epsilon_level"] == eps][task_col].dropna()
+                if not sub.empty:
+                    eps_x_list.append(EPS_ORDER.index(eps))
+                    mu_list.append(float(sub.mean()))
+
+            if is_uniform:
+                h, = ax.plot(eps_x_list, mu_list, color=UNIFORM_COLOR, ls="-",
+                             marker="o", ms=6, linewidth=2.5, zorder=5)
+                legend_handles.setdefault("uniform", h)
+            else:
+                h = ax.scatter(eps_x_list, mu_list, color=STRAT_COLOR, s=80,
+                               marker="o", zorder=5)
+                legend_handles.setdefault("stratified", h)
+
+        floor_line = ax.axhline(floor, color=FLOOR_COLOR, linestyle="--",
+                                linewidth=1.2, zorder=1)
+        legend_handles.setdefault("floor", floor_line)
+
+        # Floor value annotation slightly above the dashed line, left-aligned
+        ax.text(0, floor + 0.012, f"{floor:.2f}",
+                ha="left", va="bottom", fontsize=26, color=FLOOR_COLOR)
+
+        ax.set_ylabel("AUC-ROC", fontsize=28)
+        ax.set_title(task_name, fontsize=32, fontweight="bold", pad=6)
+        ax.set_ylim(0.25, 1.05)
+        ax.grid(True, alpha=0.3)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="both", labelsize=26)
+
+    axes[-1].set_xticks(range(len(EPS_ORDER)))
+    axes[-1].set_xticklabels(EPS_LABELS, fontsize=26)
+    axes[-1].set_xlabel("Privacy budget ε", fontsize=28)
+
+    # Single shared legend in the top-right corner of the top panel
+    seed_uniform_proxy = Line2D([0], [0], color=UNIFORM_COLOR, linewidth=1.1,
+                                alpha=0.35, linestyle="-")
+    leg_h = [
+        legend_handles.get("uniform"),
+        seed_uniform_proxy,
+        legend_handles.get("stratified"),
+        legend_handles.get("floor"),
+    ]
+    leg_l = [
+        "Uniform σ (mean)",
+        "Uniform σ (individual seeds)",
+        "Stratified σ (mean)",
+        "Clinical floor",
+    ]
+    valid = [(h, l) for h, l in zip(leg_h, leg_l) if h is not None]
+    if valid:
+        axes[0].legend(
+            [h for h, _ in valid], [l for _, l in valid],
+            fontsize=14, loc="lower right",
+            framealpha=0.9, edgecolor="#cccccc",
+        )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    print(f"Saved → {out}")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",  default="results/privacy_utility_combined.csv")
-    parser.add_argument("--output", default="figures/privacy_utility.png")
-    parser.add_argument("--test",   action="store_true",
-                        help="Use test-set column names (ihm_auroc etc.) instead of val_*")
+    parser.add_argument("--input",  default="results/test_results_dp.csv")
+    parser.add_argument("--output", default="figures/privacy_utility_test.png")
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
     df["epsilon_level"] = pd.to_numeric(df["epsilon_level"], errors="coerce").fillna(float("inf"))
-    if not args.test:
-        df = _last_round_per_seed(df)
-
-    TASK_COLS = TASK_COLS_TEST if args.test else TASK_COLS_VAL
-    modes_present = df["mode"].unique().tolist()
-
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), sharey=False)
-    fig.suptitle("AUC-ROC as a function of privacy budget ε per clinical prediction task", fontweight="normal")
-
-    for ax, (task_name, task_col) in zip(axes, TASK_COLS.items()):
-        floor = CLINICAL_FLOORS[task_name]
-        means, stds = _summarise(df, task_col)
-
-        for mode in ["uniform", "stratified"]:
-            if mode not in modes_present:
-                continue
-            style = MODE_STYLE[mode]
-            eps_vals, mu_vals, sd_vals = [], [], []
-            for eps in EPS_ORDER:
-                try:
-                    mu = means.loc[(mode, eps)]
-                    sd = stds.loc[(mode, eps)]
-                    eps_vals.append(eps)
-                    mu_vals.append(mu)
-                    sd_vals.append(sd if not np.isnan(sd) else 0.0)
-                except KeyError:
-                    continue
-
-            # Evenly-spaced categorical positions so ε values are not bunched
-            x_plot = [EPS_ORDER.index(e) for e in eps_vals]
-            mu_arr = np.array(mu_vals)
-            sd_arr = np.array(sd_vals)
-
-            ax.plot(x_plot, mu_arr, color=style["color"], ls=style["ls"],
-                    marker="o", ms=4, linewidth=1.4, label=style["label"])
-            ax.fill_between(x_plot, mu_arr - sd_arr, mu_arr + sd_arr,
-                            color=style["color"], alpha=0.15)
-
-            # ε* marker
-            eps_star = _find_eps_star(means, floor, mode)
-            if eps_star is not None:
-                x_star = EPS_ORDER.index(eps_star)
-                ax.axvline(x_star, color=style["color"], ls=":", alpha=0.6, linewidth=1.0)
-                ax.text(x_star, 1.02, f"ε*={EPS_LABELS[x_star]}",
-                        fontsize=11, color=style["color"], ha="center", va="top",
-                        bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))
-
-        ax.axhline(floor, color="#888888", linestyle="--", linewidth=0.8,
-                   label=f"Floor ({floor})")
-
-        ax.set_xticks(range(len(EPS_ORDER)))
-        ax.set_xticklabels(EPS_LABELS)
-        ax.set_xlabel("Privacy budget ε")
-        ax.set_ylabel("Mean AUC-ROC")
-        ax.set_title(task_name)
-        ax.set_ylim(0.3, 1.05)
-        ax.legend(fontsize=9, loc="lower right")
-        ax.grid(True, alpha=0.3)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-
-    fig.tight_layout()
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"Saved → {out}")
+    _plot_privacy(df, Path(args.output), TASK_COLS_TEST)
 
 
 if __name__ == "__main__":

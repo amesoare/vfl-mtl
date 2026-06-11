@@ -1,22 +1,4 @@
-"""
-privacy/adaptive_dpsgd.py — DP mechanism for VFL cut-layer gradients.
-
-In VFL the server returns per-sample embedding gradients to each client:
-  grad[i] = ∂L/∂z_i  shape (B, embed_dim)
-
-Privacy is protected by applying DP noise at the cut layer before the
-client uses those gradients for local backpropagation. This reduces label
-leakage via cut-layer embeddings by adding DP noise to the encoder's gradient
-updates (McMahan et al. 2018), making embeddings less label-informative and
-reducing linear-probe and MIA attack success (Weng et al. 2021, Luo et al. 2021).
-
-DPVFLClient subclasses VFLClient and overrides receive_gradient() to
-apply clip_and_noise() transparently — no changes needed to the training
-loop or fl/server.py.
-
-Stratified mode assigns tighter noise (lower σ) to higher-stakes tasks:
-  σ_IHM < σ_Decomp < σ_Pheno  (clinical risk hierarchy)
-"""
+"""privacy/adaptive_dpsgd.py — DP clip-and-noise for VFL cut-layer gradients."""
 
 from __future__ import annotations
 
@@ -32,29 +14,12 @@ _TASKS = ("ihm", "decomp", "pheno")
 
 
 class AdaptiveDPSGD:
-    """
-    DP mechanism for embedding gradients at the VFL cut layer.
-
-    Applies per-sample L2 norm clipping and Gaussian noise to the
-    (B, embed_dim) gradient tensor received from the server.
-
-    Noise scale follows Abadi et al. (2016):
-      - Clip each sample's gradient: ||g_i|| ≤ C  (C = max_grad_norm)
-      - Add noise: g_i += N(0, (σ·C/√B)²·I)
-    When summed during backward(), the total additive noise is N(0, (σ·C)²·I),
-    matching the DP-SGD guarantee with sensitivity C and noise multiplier σ.
-
-    Parameters
-    ----------
-    max_grad_norm : float
-        Per-sample gradient clipping bound (sensitivity C). Default 1.0.
-    """
+    """Per-sample L2 clip + Gaussian noise for VFL cut-layer gradients (Abadi et al. 2016)."""
 
     def __init__(self, max_grad_norm: float = 1.0) -> None:
         self.max_grad_norm = max_grad_norm
         self._sigma: dict[str, float] = {}
 
-    # ------------------------------------------------------------------
 
     def set_uniform(self, sigma: float) -> None:
         """All tasks use the same noise multiplier σ."""
@@ -67,37 +32,16 @@ class AdaptiveDPSGD:
         sigma_decomp: float,
         sigma_pheno: float,
     ) -> None:
-        """
-        Per-task σ allocation based on clinical risk hierarchy.
-        Tighter noise (lower σ) → stronger privacy for high-stakes tasks.
-        Expected: σ_IHM < σ_Decomp < σ_Pheno.
-        """
+        """Per-task σ allocation: σ_IHM < σ_Decomp < σ_Pheno (clinical risk hierarchy)."""
         self._sigma = {
             "ihm":    sigma_ihm,
             "decomp": sigma_decomp,
             "pheno":  sigma_pheno,
         }
 
-    # ------------------------------------------------------------------
 
     def clip_and_noise(self, grad: Tensor, task: str) -> Tensor:
-        """
-        Apply DP to embedding gradient tensor.
-
-        Parameters
-        ----------
-        grad : (B, embed_dim) — per-sample embedding gradients from server
-        task : 'ihm' | 'decomp' | 'pheno' — selects per-task σ
-
-        Returns
-        -------
-        (B, embed_dim) — clipped and noised gradient (same device as input)
-
-        Note: the server returns the MEAN gradient ∂L/∂z = (1/B)·Σ ∂L_i/∂z_i,
-        so each row has sensitivity C/B, not C.  Both the clipping bound and the
-        noise std are scaled by 1/B.  The noise-multiplier σ (= noise/sensitivity)
-        is unchanged, so Rényi-DP accounting via RenyiAccountant is unaffected.
-        """
+        """Clip per-row L2 norm to C/B and add Gaussian noise; returns (B, embed_dim)."""
         sigma = self._sigma.get(task, 0.0)
         if sigma == 0.0:
             return grad
@@ -117,7 +61,6 @@ class AdaptiveDPSGD:
         noise = torch.randn_like(clipped) * noise_std
         return clipped + noise
 
-    # ------------------------------------------------------------------
 
     @property
     def is_enabled(self) -> bool:
@@ -134,26 +77,9 @@ class AdaptiveDPSGD:
         )
 
 
-# ---------------------------------------------------------------------------
-
 
 class DPVFLClient(VFLClient):
-    """
-    VFLClient with differential privacy at the cut layer.
-
-    Overrides receive_gradient() to apply AdaptiveDPSGD.clip_and_noise()
-    before backpropagating the server gradient through the local LSTM encoder.
-    All other behaviour (forward, eval_forward, FedAvg interface) is unchanged.
-
-    Parameters
-    ----------
-    dp_mechanism : AdaptiveDPSGD
-        Shared DP mechanism. Set σ via set_uniform() / set_stratified() before
-        starting training.
-    site : 'A' | 'B' | 'C'
-        Determines which task σ is applied (A→ihm, B→decomp, C→pheno).
-    All remaining kwargs are forwarded to VFLClient.__init__().
-    """
+    """VFLClient with DP at the cut layer: overrides receive_gradient() to apply clip_and_noise()."""
 
     def __init__(
         self,

@@ -1,24 +1,10 @@
 """
 train.py — Round-based VFL-MTL training loop.
 
-Each "round" is one pass over the training dataset (epoch). Per-batch protocol:
-  1. Each VFLClient runs its LSTM encoder → detached embedding (cut layer)
-  2. VFLServer concatenates embeddings, forward through MMoE, computes weighted loss
-  3. VFLServer backpropagates, slices embedding gradients per site
-  4. Each VFLClient receives its gradient slice, backpropagates into LSTM, updates weights
-
-Validation runs after every --eval-every rounds and logs per-task metrics to
-results/metrics_seed{N}.csv.
-
 Usage
 -----
-  # Basic run:
   python train.py --root . --rounds 50 --seed 42
-
-  # With GPU and FedProx regularisation:
   python train.py --root . --rounds 50 --device cuda --fedprox-mu 0.01 --seed 42
-
-  # Resume from checkpoint:
   python train.py --root . --rounds 50 --resume checkpoints/ckpt_round0020_seed42.pt
 
 Seeds reported in the paper: 42, 123, 7
@@ -50,10 +36,6 @@ from fl.fedprox import fedprox_penalty
 from fl.server import VFLServer
 
 
-# ---------------------------------------------------------------------------
-# Configuration dataclass
-# ---------------------------------------------------------------------------
-
 @dataclass
 class TrainConfig:
     """All hyperparameters and flags for a single VFL-MTL training run."""
@@ -84,7 +66,6 @@ class TrainConfig:
     decomp_pos_weight:  float = 0.0
     # Rounds without mean-AUROC improvement before stopping (0 = disabled).
     patience:           int   = 15
-    # Ablation flags (Week 4)
     use_mmoe:           bool  = True   # False = shared-bottom MLP (Abl 1)
     uniform_gating:     bool  = False  # True  = fixed equal expert weights (Abl 4)
     uncertainty_weighting: bool = False  # Kendall et al. (2018) homoscedastic loss weighting
@@ -93,6 +74,11 @@ class TrainConfig:
     grad_sim_every:     int   = 0
     # When set, shuffle Sites B and C patient ordering (breaks PSI alignment). Abl 2.
     random_align_seed:  int | None = None
+    # Dataset selection and per-task type overrides.
+    # dataset='eicu' switches data paths; task_types overrides any head's loss/metric.
+    # Example for eICU: task_types={"decomp": "regression"}
+    dataset:            str        = "mimic"
+    task_types:         dict | None = None
     # Paper 2 — Differential privacy configuration.
     # None = no DP (default; Paper 1 behaviour unchanged).
     # Uniform:     {'mode': 'uniform',     'sigma': 1.0, 'max_grad_norm': 1.0, 'delta': 1e-5}
@@ -100,10 +86,6 @@ class TrainConfig:
     #               'sigma_pheno': 1.5, 'max_grad_norm': 1.0, 'delta': 1e-5}
     privacy_config:     dict | None = None
 
-
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -113,26 +95,16 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-# ---------------------------------------------------------------------------
-# Synthetic data (smoke-test mode)
-# ---------------------------------------------------------------------------
-
 def make_synthetic_loaders(
     batch_size: int,
     seq_len: int,
     n_batches: int = 10,
+    task_types: dict | None = None,
 ) -> dict[str, DataLoader]:
-    """
-    Generate random tensors matching the shape contract of build_site_loaders().
-    Used with --use-synthetic to verify the training loop without real data.
-
-    Shapes per batch:
-      Site A: x (B, T, 7)  mask (B, T)  y_ihm    (B,) float32
-      Site B: x (B, T, 4)  mask (B, T)  y_decomp (B,) float32
-      Site C: x (B, T, 3)  mask (B, T)  y_pheno  (B, 25) float32
-    """
-    N = batch_size * n_batches
-    T = seq_len
+    """Random tensors matching build_site_loaders() shapes. Use --use-synthetic for smoke tests."""
+    _tt = task_types or {}
+    N   = batch_size * n_batches
+    T   = seq_len
 
     def _loader(n_feat: int, y: torch.Tensor) -> DataLoader:
         x    = torch.randn(N, T, n_feat)
@@ -140,176 +112,18 @@ def make_synthetic_loaders(
         ds   = TensorDataset(x, mask, y)
         return DataLoader(ds, batch_size=batch_size, shuffle=False)
 
+    n_feat_B = 3 if _tt.get("decomp") == "regression" else 4
+    y_B      = (torch.rand(N) * 10.0 if _tt.get("decomp") == "regression"
+                else torch.randint(0, 2, (N,)).float())
+
     loaders = {
-        "A": _loader(7,  torch.randint(0, 2, (N,)).float()),
-        "B": _loader(4,  torch.randint(0, 2, (N,)).float()),
-        "C": _loader(3,  torch.randint(0, 2, (N, 25)).float()),
+        "A": _loader(7,       torch.randint(0, 2, (N,)).float()),
+        "B": _loader(n_feat_B, y_B),
+        "C": _loader(3,       torch.randint(0, 2, (N, 25)).float()),
     }
     return loaders
 
 
-# ---------------------------------------------------------------------------
-# Per-task metrics
-# ---------------------------------------------------------------------------
-
-def compute_metrics(
-    all_preds: dict[str, list],
-    all_labels: dict[str, list],
-) -> dict[str, float]:
-    """
-    IHM   : AUC-ROC, AUC-PR              (Harutyunyan et al. 2019, primary metrics)
-    Decomp: AUC-ROC, AUC-PR              (binary, same metric family as IHM)
-    Pheno : macro-AUC-ROC across 25 labels (skip labels with no positives in split)
-    """
-    metrics: dict[str, float] = {}
-
-    # IHM — binary probabilities
-    p_ihm = np.concatenate(all_preds["ihm"])   # (N,)
-    y_ihm = np.concatenate(all_labels["ihm"])  # (N,)
-    metrics["ihm_auroc"] = float(roc_auc_score(y_ihm, p_ihm))
-    metrics["ihm_auprc"] = float(average_precision_score(y_ihm, p_ihm))
-
-    # Decomp — binary probabilities
-    p_decomp = np.concatenate(all_preds["decomp"])   # (N,)
-    y_decomp = np.concatenate(all_labels["decomp"])  # (N,)
-    metrics["decomp_auroc"] = float(roc_auc_score(y_decomp, p_decomp))
-    metrics["decomp_auprc"] = float(average_precision_score(y_decomp, p_decomp))
-
-    # Pheno — per-label AUC averaged over labels that have at least one positive
-    p_pheno = np.concatenate(all_preds["pheno"])  # (N, 25)
-    y_pheno = np.concatenate(all_labels["pheno"]) # (N, 25)
-    per_label_aucs = [
-        roc_auc_score(y_pheno[:, i], p_pheno[:, i])
-        for i in range(y_pheno.shape[1])
-        if y_pheno[:, i].sum() > 0
-    ]
-    metrics["pheno_macro_auroc"] = float(np.mean(per_label_aucs)) if per_label_aucs else float("nan")
-
-    return metrics
-
-
-# ---------------------------------------------------------------------------
-# One training round
-# ---------------------------------------------------------------------------
-
-def train_one_round(
-    clients: dict[str, VFLClient],
-    server: VFLServer,
-    loaders: dict,
-    fedprox_mu: float,
-    global_encoder_params: dict[str, dict] | None,
-) -> dict[str, float]:
-    """
-    Iterate over aligned batches from all three site loaders.
-
-    FedProx: if fedprox_mu > 0 and global_encoder_params are provided,
-    a proximal correction step is applied to each client encoder after the
-    normal VFL backward pass. This keeps local encoders close to the
-    round-start parameters, improving convergence in heterogeneous settings.
-
-    Returns averaged loss values for logging.
-    """
-    task_loss_sums = {"ihm": 0.0, "decomp": 0.0, "pheno": 0.0}
-    total_loss_sum = 0.0
-    n_batches = 0
-
-    # All three loaders cover the same PSI-aligned ICU stays; zip stops
-    # at the shortest loader. Lengths should be equal but zip is safe.
-    for batch_A, batch_B, batch_C in zip(loaders["A"], loaders["B"], loaders["C"]):
-        x_A, mask_A, y_ihm    = batch_A
-        x_B, mask_B, y_decomp = batch_B
-        x_C, mask_C, y_pheno  = batch_C
-
-        # Step 1 — local forward passes (returns detached embeddings)
-        emb_A = clients["A"].forward(x_A, mask_A)
-        emb_B = clients["B"].forward(x_B, mask_B)
-        emb_C = clients["C"].forward(x_C, mask_C)
-
-        # Step 2 — server: aggregate, forward MMoE, compute loss
-        server.aggregate_embeddings({"A": emb_A, "B": emb_B, "C": emb_C})
-        total_loss, task_losses = server.forward_and_loss({
-            "ihm":    y_ihm,
-            "decomp": y_decomp,
-            "pheno":  y_pheno,
-        })
-
-        # Step 3 — server backward + weight update
-        server.backward_and_step(total_loss)
-
-        # Step 4 — distribute embedding gradients back to clients
-        grads = server.get_embedding_gradients()
-        clients["A"].receive_gradient(grads["A"])
-        clients["B"].receive_gradient(grads["B"])
-        clients["C"].receive_gradient(grads["C"])
-
-        # Optional FedProx correction: one extra gradient step per client
-        # toward the round-start (global) encoder parameters.
-        if fedprox_mu > 0.0 and global_encoder_params is not None:
-            for site, client in clients.items():
-                penalty = fedprox_penalty(
-                    client.encoder,
-                    global_encoder_params[site],
-                    mu=fedprox_mu,
-                )
-                client.optimizer.zero_grad()
-                penalty.backward()
-                client.optimizer.step()
-
-        for t, loss in task_losses.items():
-            task_loss_sums[t] += loss.item()
-        total_loss_sum += total_loss.item()
-        n_batches += 1
-
-    if n_batches == 0:
-        raise RuntimeError("Training loaders returned no batches — check data paths.")
-
-    return {
-        "total_loss":  total_loss_sum / n_batches,
-        "ihm_loss":    task_loss_sums["ihm"]    / n_batches,
-        "decomp_loss": task_loss_sums["decomp"] / n_batches,
-        "pheno_loss":  task_loss_sums["pheno"]  / n_batches,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def evaluate(
-    clients: dict[str, VFLClient],
-    server: VFLServer,
-    loaders: dict,
-) -> dict[str, float]:
-    """Run inference on val or test split; return per-task metrics."""
-    all_preds: dict[str, list]  = {"ihm": [], "decomp": [], "pheno": []}
-    all_labels: dict[str, list] = {"ihm": [], "decomp": [], "pheno": []}
-
-    for batch_A, batch_B, batch_C in zip(loaders["A"], loaders["B"], loaders["C"]):
-        x_A, mask_A, y_ihm    = batch_A
-        x_B, mask_B, y_decomp = batch_B
-        x_C, mask_C, y_pheno  = batch_C
-
-        emb_A = clients["A"].eval_forward(x_A, mask_A)
-        emb_B = clients["B"].eval_forward(x_B, mask_B)
-        emb_C = clients["C"].eval_forward(x_C, mask_C)
-
-        preds = server.predict({"A": emb_A, "B": emb_B, "C": emb_C})
-
-        all_preds["ihm"].append(preds["ihm"].squeeze(-1).cpu().numpy())
-        all_preds["decomp"].append(preds["decomp"].squeeze(-1).cpu().numpy())
-        all_preds["pheno"].append(preds["pheno"].cpu().numpy())
-
-        all_labels["ihm"].append(y_ihm.numpy())
-        all_labels["decomp"].append(y_decomp.numpy())
-        all_labels["pheno"].append(y_pheno.numpy())
-
-    return compute_metrics(all_preds, all_labels)
-
-
-# ---------------------------------------------------------------------------
-# Checkpointing
-# ---------------------------------------------------------------------------
 
 def save_checkpoint(
     path: Path,
@@ -375,23 +189,29 @@ def run_training(
         print(f"[train] GPU: {torch.cuda.get_device_name(device)}")
 
     # ---- Data ----
-    _all_dims = {"A": 7, "B": 4, "C": 3}
+    _all_dims    = {"A": 7, "B": 3 if cfg.dataset == "eicu" else 4, "C": 3}
+    # cfg.site_input_dims defaults to MIMIC values; cap at actual feature count so
+    # eICU (B=3) is never overridden by the MIMIC default (B=4).
+    _site_dims   = {s: min(cfg.site_input_dims.get(s, _all_dims[s]), _all_dims[s])
+                    for s in _all_dims}
     active_sites = list(_all_dims.keys())[:cfg.n_sites]
+    _tt          = cfg.task_types or {}
 
     if prebuilt_loaders is not None:
-        train_loaders = {s: prebuilt_loaders["train"][s] for s in active_sites}
-        val_loaders   = {s: prebuilt_loaders["val"][s]   for s in active_sites}
+        train_loaders     = {s: prebuilt_loaders["train"][s] for s in active_sites}
+        val_loaders       = {s: prebuilt_loaders["val"][s]   for s in active_sites}
         decomp_pos_weight = prebuilt_loaders.get("decomp_pos_weight", 1.0)
     elif cfg.use_synthetic:
-        decomp_pos_weight = 1.0   # no real imbalance in synthetic data
+        decomp_pos_weight = 1.0
         n_batches = max(1, cfg.n_synthetic // cfg.batch_size)
-        train_loaders = make_synthetic_loaders(cfg.batch_size, cfg.max_seq_len, n_batches)
-        val_loaders   = make_synthetic_loaders(cfg.batch_size, cfg.max_seq_len, max(1, n_batches // 4))
+        train_loaders = make_synthetic_loaders(cfg.batch_size, cfg.max_seq_len, n_batches, _tt)
+        val_loaders   = make_synthetic_loaders(cfg.batch_size, cfg.max_seq_len, max(1, n_batches // 4), _tt)
         train_loaders = {s: train_loaders[s] for s in active_sites}
         val_loaders   = {s: val_loaders[s]   for s in active_sites}
     else:
-        # Auto-compute decomp pos_weight from training split unless caller provided one.
-        if cfg.decomp_pos_weight > 0.0:
+        if _tt.get("decomp") == "regression":
+            decomp_pos_weight = 1.0  # MSE loss; pos_weight unused
+        elif cfg.decomp_pos_weight > 0.0:
             decomp_pos_weight = cfg.decomp_pos_weight
         else:
             site_b_csv = Path(cfg.splits_dir) / "site_B_labs.csv"
@@ -405,13 +225,14 @@ def run_training(
                 print(f"[train] WARNING: decomp pos_rate={pos_rate:.3%} is outside expected "
                       f"5–50% range — check site_B_labs.csv alignment.")
 
-        # build_site_loaders expects project root and appends data/vertical_splits internally
         project_root = Path(cfg.splits_dir).parents[1]
         train_loaders = build_site_loaders(
-            project_root, "train", cfg.batch_size, cfg.num_workers, cfg.max_seq_len
+            project_root, "train", cfg.batch_size, cfg.num_workers, cfg.max_seq_len,
+            dataset=cfg.dataset,
         )
         val_loaders = build_site_loaders(
-            project_root, "val", cfg.batch_size, cfg.num_workers, cfg.max_seq_len
+            project_root, "val", cfg.batch_size, cfg.num_workers, cfg.max_seq_len,
+            dataset=cfg.dataset,
         )
         train_loaders = {s: train_loaders[s] for s in active_sites}
         val_loaders   = {s: val_loaders[s]   for s in active_sites}
@@ -465,7 +286,7 @@ def run_training(
     clients: dict[str, VFLClient] = {}
     for s in active_sites:
         _client_kwargs = dict(
-            input_dim=cfg.site_input_dims.get(s, _all_dims[s]),
+            input_dim=_site_dims[s],
             hidden_dim=cfg.hidden_dim,
             embed_dim=cfg.embed_dim,
             lr=cfg.lr,
@@ -487,6 +308,7 @@ def run_training(
         use_mmoe=cfg.use_mmoe,
         uniform_gating=cfg.uniform_gating,
         uncertainty_weighting=cfg.uncertainty_weighting,
+        task_types=cfg.task_types,
     )
 
     ckpt_dir = Path(cfg.ckpt_dir)
@@ -494,9 +316,10 @@ def run_training(
     best_val_ihm = -1.0
     # Early stopping: track mean AUROC over tasks with nonzero weight.
     _active_auroc_keys = (
-        (["ihm_auroc"]          if cfg.task_weights.get("ihm",   0) > 0 else []) +
-        (["decomp_auroc"]       if cfg.task_weights.get("decomp",0) > 0 else []) +
-        (["pheno_macro_auroc"]  if cfg.task_weights.get("pheno", 0) > 0 else [])
+        (["ihm_auroc"]         if cfg.task_weights.get("ihm",   0) > 0 else []) +
+        (["decomp_auroc"]      if cfg.task_weights.get("decomp",0) > 0
+                                  and _tt.get("decomp", "binary") == "binary" else []) +
+        (["pheno_macro_auroc"] if cfg.task_weights.get("pheno", 0) > 0 else [])
     )
     best_mean_auroc = -1.0
     no_improve      = 0
@@ -511,16 +334,16 @@ def run_training(
             global_encoder_params = {s: c.get_encoder_params() for s, c in clients.items()}
 
         # ---- Train one round ----
-        # Build site-limited loaders dict for train_one_round
         round_train = {s: train_loaders[s] for s in active_sites}
         _compute_grad_sim = (
             cfg.grad_sim_every > 0 and rnd % cfg.grad_sim_every == 0
         )
         train_losses = _train_one_round_sites(
             clients, server, round_train, active_sites,
-            cfg.site_input_dims, _all_dims,
+            _site_dims, _all_dims,
             cfg.fedprox_mu, global_encoder_params,
             compute_grad_sim=_compute_grad_sim,
+            task_types=_tt,
         )
 
         # ---- FedAvg ----
@@ -528,7 +351,7 @@ def run_training(
         # In our heterogeneous VFL setup each site has a unique input_dim, so
         # FedAvg across sites is skipped — aggregation would require identical shapes.
         if cfg.use_fedavg and (rnd + 1) % cfg.fedavg_every == 0:
-            dims = [cfg.site_input_dims.get(s, _all_dims[s]) for s in active_sites]
+            dims = [_site_dims[s] for s in active_sites]
             if len(set(dims)) == 1:
                 n_batches_per_site = len(list(train_loaders.values())[0])
                 global_params = fedavg_aggregate(
@@ -543,7 +366,7 @@ def run_training(
         if (rnd + 1) % cfg.eval_every == 0:
             round_val = {s: val_loaders[s] for s in active_sites}
             val_metrics = _evaluate_sites(clients, server, round_val, active_sites,
-                                          cfg.site_input_dims, _all_dims)
+                                          _site_dims, _all_dims, _tt)
 
         elapsed = time.time() - t_round
         row = {
@@ -592,6 +415,8 @@ def run_training(
             row["val_ihm_auprc"]         = val_metrics.get("ihm_auprc",         float("nan"))
             row["val_decomp_auroc"]      = val_metrics.get("decomp_auroc",      float("nan"))
             row["val_decomp_auprc"]      = val_metrics.get("decomp_auprc",      float("nan"))
+            row["val_rlos_mae"]          = val_metrics.get("rlos_mae",           float("nan"))
+            row["val_rlos_rmse"]         = val_metrics.get("rlos_rmse",          float("nan"))
             row["val_pheno_macro_auroc"] = val_metrics.get("pheno_macro_auroc", float("nan"))
             # Save best checkpoint (keyed by model_name so each config gets its own file)
             score = val_metrics.get("ihm_auroc", -1.0)
@@ -643,8 +468,9 @@ def _train_one_round_sites(
     site_input_dims, all_dims,
     fedprox_mu, global_encoder_params,
     compute_grad_sim: bool = False,
+    task_types: dict | None = None,
 ) -> dict[str, float]:
-    """train_one_round generalised to arbitrary active_sites with feature truncation."""
+    """One training round over active_sites with feature truncation and optional FedProx/grad-sim."""
     task_loss_sums = {"ihm": 0.0, "decomp": 0.0, "pheno": 0.0}
     total_loss_sum = 0.0
     n_batches = 0
@@ -653,7 +479,6 @@ def _train_one_round_sites(
     loader_iters = [loaders[s] for s in active_sites]
 
     for batches in zip(*loader_iters):
-        # batches is a tuple of (x, mask, y) per site in active_sites order
         embeddings = {}
         labels = {}
         for site, (x, mask, y) in zip(active_sites, batches):
@@ -683,7 +508,7 @@ def _train_one_round_sites(
                 assert not (v != v), f"NaN loss at step 0 for task '{t}'"
                 assert v != float("inf"), f"Inf loss at step 0 for task '{t}'"
                 assert v > 0.0, f"Zero loss at step 0 for task '{t}' — constant predictor?"
-            if "decomp" in labels:
+            if "decomp" in labels and (task_types or {}).get("decomp", "binary") == "binary":
                 y_d = labels["decomp"]
                 assert set(y_d.unique().tolist()).issubset({0.0, 1.0}), \
                     f"Decomp labels contain values outside {{0,1}}: {y_d.unique().tolist()}"
@@ -726,8 +551,9 @@ def _train_one_round_sites(
 
 
 @torch.no_grad()
-def _evaluate_sites(clients, server, loaders, active_sites, site_input_dims, all_dims) -> dict[str, float]:
-    """evaluate() generalised to arbitrary active_sites with feature truncation."""
+def _evaluate_sites(clients, server, loaders, active_sites, site_input_dims, all_dims,
+                    task_types: dict | None = None) -> dict[str, float]:
+    """Evaluation over active_sites with feature truncation; handles binary and regression tasks."""
     all_preds:  dict[str, list] = {"ihm": [], "decomp": [], "pheno": []}
     all_labels: dict[str, list] = {"ihm": [], "decomp": [], "pheno": []}
 
@@ -759,10 +585,15 @@ def _evaluate_sites(clients, server, loaders, active_sites, site_input_dims, all
         metrics["ihm_auroc"] = float(roc_auc_score(y, p))
         metrics["ihm_auprc"] = float(average_precision_score(y, p))
     if all_labels["decomp"]:
-        p = np.concatenate(all_preds["decomp"])
-        y = np.concatenate(all_labels["decomp"])
-        metrics["decomp_auroc"] = float(roc_auc_score(y, p))
-        metrics["decomp_auprc"] = float(average_precision_score(y, p))
+        p  = np.concatenate(all_preds["decomp"])
+        y  = np.concatenate(all_labels["decomp"])
+        tt = (task_types or {}).get("decomp", "binary")
+        if tt == "regression":
+            metrics["rlos_mae"]  = float(np.mean(np.abs(p - y)))
+            metrics["rlos_rmse"] = float(np.sqrt(np.mean((p - y) ** 2)))
+        else:
+            metrics["decomp_auroc"] = float(roc_auc_score(y, p))
+            metrics["decomp_auprc"] = float(average_precision_score(y, p))
     if all_labels["pheno"]:
         p = np.concatenate(all_preds["pheno"])
         y = np.concatenate(all_labels["pheno"])
@@ -772,10 +603,6 @@ def _evaluate_sites(clients, server, loaders, active_sites, site_input_dims, all
     return metrics
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="VFL-MTL training loop",
@@ -783,6 +610,8 @@ def parse_args() -> argparse.Namespace:
     )
     # Data
     p.add_argument("--root",        default=".",  help="Project root directory")
+    p.add_argument("--dataset",     default="mimic", choices=["mimic", "eicu"],
+                   help="Dataset to train on; 'eicu' uses tabular vertical splits")
     p.add_argument("--max-seq-len", type=int, default=48)
     p.add_argument("--num-workers", type=int, default=0, help="DataLoader worker count")
 
@@ -841,17 +670,24 @@ def main() -> None:
     print(f"[train] device={device}  seed={args.seed}  rounds={args.rounds}")
 
     # ---- Data ----
+    _eicu = args.dataset == "eicu"
+    _task_types = {"decomp": "regression"} if _eicu else {}
+
     if args.use_synthetic:
         print("[train] Using synthetic data (smoke-test mode)")
-        train_loaders = make_synthetic_loaders(args.batch_size, args.max_seq_len)
-        val_loaders   = make_synthetic_loaders(args.batch_size, args.max_seq_len, n_batches=4)
+        train_loaders = make_synthetic_loaders(args.batch_size, args.max_seq_len,
+                                               task_types=_task_types)
+        val_loaders   = make_synthetic_loaders(args.batch_size, args.max_seq_len,
+                                               n_batches=4, task_types=_task_types)
     else:
         print("[train] Building data loaders...")
         train_loaders = build_site_loaders(
-            root, "train", args.batch_size, args.num_workers, args.max_seq_len
+            root, "train", args.batch_size, args.num_workers, args.max_seq_len,
+            dataset=args.dataset,
         )
         val_loaders = build_site_loaders(
-            root, "val", args.batch_size, args.num_workers, args.max_seq_len
+            root, "val", args.batch_size, args.num_workers, args.max_seq_len,
+            dataset=args.dataset,
         )
     print(
         f"[train] Train batches — A: {len(train_loaders['A'])}, "
@@ -859,8 +695,7 @@ def main() -> None:
     )
 
     # ---- Models ----
-    # Input dims fixed by the MIMIC-III vertical split protocol (CLAUDE.md)
-    site_input_dims = {"A": 7, "B": 4, "C": 3}
+    site_input_dims = {"A": 7, "B": 3 if _eicu else 4, "C": 3}
     clients: dict[str, VFLClient] = {
         site: VFLClient(
             input_dim=dim,
@@ -877,6 +712,7 @@ def main() -> None:
         lr=args.lr,
         device=device,
         task_weights={"ihm": args.w_ihm, "decomp": args.w_decomp, "pheno": args.w_pheno},
+        task_types=_task_types,
     )
 
     # ---- Resume ----
@@ -914,16 +750,26 @@ def main() -> None:
             }
 
         # ---- Train ----
-        train_losses = train_one_round(
+        train_losses = _train_one_round_sites(
             clients, server, train_loaders,
+            active_sites=["A", "B", "C"],
+            site_input_dims=site_input_dims,
+            all_dims=site_input_dims,
             fedprox_mu=args.fedprox_mu,
             global_encoder_params=global_encoder_params,
+            task_types=_task_types,
         )
 
         # ---- Validate ----
         val_metrics: dict[str, float] = {}
         if (rnd + 1) % args.eval_every == 0:
-            val_metrics = evaluate(clients, server, val_loaders)
+            val_metrics = _evaluate_sites(
+                clients, server, val_loaders,
+                active_sites=["A", "B", "C"],
+                site_input_dims=site_input_dims,
+                all_dims=site_input_dims,
+                task_types=_task_types,
+            )
 
         elapsed = time.time() - t_round
 

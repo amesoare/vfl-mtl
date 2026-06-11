@@ -1,19 +1,15 @@
 """
 figures/scalability_curves.py
 
-Two-panel figure: AUC slopegraph (left) + training cost — convergence rounds
-and total wall-clock time (right).
+Three-panel figure: AUC slopegraph + convergence rounds + training time.
 
 Sources:
   test_exp3.csv -- held-out test AUC metrics (n_sites = 2 and 3)
-  Convergence rounds: hardcoded from exp3 run summary (3 seeds: 42, 123, 7)
-    n=2: 60.3 ± 31.1 rounds
-    n=3: 70.0 ± 10.01 rounds
-  Per-round wall-clock: from exp4 Snellius timing
-    n=2: 4.18 s/round  |  n=3: 5.54 s/round
+  exp3.csv      -- training-loop CSV (for convergence rounds and wall-clock)
 
 Usage:
     python figures/scalability_curves.py \
+        --exp3 results/exp3.csv \
         --test_exp3 results/test_exp3.csv \
         --output figures/scalability.png
 """
@@ -35,15 +31,15 @@ _C = ["#9d7b78", "#6a4c7a", "#2f283d", "#8a3c48", "#3d3527", "#b8c7d6", "#2f4a6d
 
 plt.rcParams.update({
     "figure.dpi":        150,
-    "font.size":         11,
+    "font.size":         15,
     "font.family":       "serif",
     "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":    12,
+    "axes.titlesize":    17,
     "axes.titleweight":  "normal",
-    "axes.labelsize":    11,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   9,
+    "axes.labelsize":    15,
+    "xtick.labelsize":   14,
+    "ytick.labelsize":   14,
+    "legend.fontsize":   12,
 })
 
 _METRICS = [
@@ -58,11 +54,36 @@ _CONV_ROUNDS = {2: (60.3, 31.1), 3: (70.0, 10.01)}
 _SEC_PER_ROUND = {2: 4.18, 3: 5.54}
 
 
-def _plot_slopegraph(ax, test_df):
+def _spread_labels(annots, min_gap=0.07):
+    """Push label y-positions apart until no two are closer than min_gap."""
+    if len(annots) < 2:
+        return annots
+    ys = [a[0] for a in annots]
+    order = sorted(range(len(ys)), key=lambda i: ys[i])
+    for _ in range(200):
+        changed = False
+        for k in range(len(order) - 1):
+            i, j = order[k], order[k + 1]
+            if ys[j] - ys[i] < min_gap:
+                mid = (ys[i] + ys[j]) / 2
+                ys[i] = mid - min_gap / 2
+                ys[j] = mid + min_gap / 2
+                changed = True
+        if not changed:
+            break
+    return [(ys[k],) + annots[k][1:] for k in range(len(annots))]
+
+
+def _plot_slopegraph(ax, test_df, fs_annot=12, fs_ticks=14, fs_ylabel=14,
+                     fs_title=15, fs_yticks=14, annot_bold=False):
     xs = sorted(test_df["n_sites"].unique())
     x_left, x_right = 0, 1
     slope_xs = [x_left, x_right]
     all_auc = []
+    all_auc_with_sd = []
+
+    left_annots  = []  # (y, text, color)
+    right_annots = []
 
     for metric, label, color, floor in _METRICS:
         g = test_df.groupby("n_sites")[metric]
@@ -72,6 +93,8 @@ def _plot_slopegraph(ax, test_df):
         pts = [(xi, float(mu[x]), float(sd[x]))
                for xi, x in zip(slope_xs, xs) if not np.isnan(mu[x])]
         all_auc.extend(m for _, m, _ in pts)
+        all_auc_with_sd.extend(m - s for _, m, s in pts)
+        all_auc_with_sd.extend(m + s for _, m, s in pts)
 
         if len(pts) == 2:
             ax.fill_between(
@@ -87,25 +110,34 @@ def _plot_slopegraph(ax, test_df):
             ax.scatter(xi, m, color=color, s=60, zorder=4)
 
         if pts and pts[0][0] == x_left:
-            ax.text(x_left - 0.04, pts[0][1], f"{label} {pts[0][1]:.3f}",
-                    ha="right", va="center", fontsize=11, fontweight="bold", color=color)
+            left_annots.append((pts[0][1], f"{label}\n{pts[0][1]:.3f}", color))
         if pts:
-            ax.text(x_right + 0.04, pts[-1][1], f"{pts[-1][1]:.3f} {label}",
-                    ha="left", va="center", fontsize=11, fontweight="bold", color=color)
+            right_annots.append((pts[-1][1], f"{pts[-1][1]:.3f}\n{label}", color))
 
         ax.axhline(floor, color=color, linestyle=":", linewidth=0.9, alpha=0.5, zorder=1)
 
+    fw = "bold" if annot_bold else "normal"
+    for y, text, color in _spread_labels(left_annots):
+        ax.text(x_left - 0.04, y, text,
+                ha="right", va="center", fontsize=fs_annot,
+                fontweight=fw, color=color)
+    for y, text, color in _spread_labels(right_annots):
+        ax.text(x_right + 0.04, y, text,
+                ha="left", va="center", fontsize=fs_annot,
+                fontweight=fw, color=color)
+
     ax.set_xticks([x_left, x_right])
-    ax.set_xticklabels(["2 institutions", "3 institutions"], fontsize=10)
-    ax.set_xlim(-0.55, 1.55)
-    ax.set_ylabel("AUC-ROC")
-    ax.set_title("(a) Per-task test AUC-ROC", pad=6)
+    ax.set_xticklabels(["2 institutions", "3 institutions"], fontsize=fs_ticks)
+    ax.set_xlim(-1.15, 1.85)
+    ax.set_ylabel("AUC-ROC", fontsize=fs_ylabel)
+    ax.set_title("Per-task test AUC-ROC", fontsize=fs_title, pad=6)
+    ax.tick_params(axis="y", labelsize=fs_yticks)
     ax.grid(True, axis="y", alpha=0.2, zorder=0)
     for spine in ("top", "right", "bottom"):
         ax.spines[spine].set_visible(False)
     ax.tick_params(bottom=False)
-    if all_auc:
-        ax.set_ylim(min(all_auc) - 0.06, max(all_auc) + 0.06)
+    if all_auc_with_sd:
+        ax.set_ylim(min(all_auc_with_sd) - 0.06, max(all_auc_with_sd) + 0.06)
 
 
 def _plot_cost(ax):
@@ -137,14 +169,12 @@ def _plot_cost(ax):
     # "rds" centred above the error bar cap; "min" to the right of the dot
     for xi, r, sr, wc in zip(xs, mu_r, sd_r, mu_wc):
         ax.text(xi, r + sr + 4, f"{r:.0f} rds",
-                ha="center", va="bottom", fontsize=9,
-                color="#1a2a3a", fontweight="bold")
+                ha="center", va="bottom", fontsize=12, color="#1a2a3a")
         ax2.text(xi + 0.18, wc, f"{wc:.1f} min",
-                 ha="left", va="center", fontsize=9,
-                 color=line_color, fontweight="bold")
+                 ha="left", va="center", fontsize=12, color=line_color)
 
     ax.set_xticks(xs)
-    ax.set_xticklabels(["2 institutions", "3 institutions"], fontsize=10)
+    ax.set_xticklabels(["2 institutions", "3 institutions"], fontsize=14)
     ax.set_xlim(-0.6, 1.6)
     ax.set_title("(b) Training cost", pad=6)
     ax.grid(True, axis="y", alpha=0.2, zorder=0)
@@ -153,32 +183,157 @@ def _plot_cost(ax):
 
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=8, framealpha=0.8)
+    ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=12, framealpha=0.8)
+
+
+def _plot_cost_strip(ax_rounds: plt.Axes, ax_time: plt.Axes,
+                    exp3_df: pd.DataFrame) -> None:
+    """Two faceted strip plots for convergence rounds and training time.
+
+    Each seed is plotted as a semi-transparent dot; mean ± std is overlaid
+    as a solid horizontal line with vertical whiskers and caps.
+    """
+    ns = [2, 3]
+    x_labels = ["2 institutions", "3 institutions"]
+    last_rounds = exp3_df.groupby(["n_sites", "seed"])["round"].max().reset_index()
+
+    DOT_COLOR  = "#4a7aa8"
+    MEAN_COLOR = "#1a2a3a"
+
+    _panel_specs = [
+        (ax_rounds, "Convergence Rounds",       lambda r, n: float(r)),
+        (ax_time,   "Total Training Time (min)", lambda r, n: r * _SEC_PER_ROUND[n] / 60),
+    ]
+
+    for ax, ylabel, val_fn in _panel_specs:
+        all_vals_flat: list[float] = []
+
+        for xi, n in enumerate(ns):
+            rows = last_rounds[last_rounds["n_sites"] == n]
+            vals = [val_fn(r, n) for r in rows["round"].values]
+            all_vals_flat.extend(vals)
+
+            # Individual seed dots with light jitter
+            n_pts = len(vals)
+            jitter = np.linspace(-0.10, 0.10, n_pts) if n_pts > 1 else [0.0]
+            for jx, v in zip(jitter, vals):
+                ax.scatter(xi + jx, v, color=DOT_COLOR, s=65, alpha=0.50,
+                           linewidths=0, zorder=3)
+
+            # Mean ± std overlay
+            mu = float(np.mean(vals))
+            sd = float(np.std(vals, ddof=1)) if n_pts > 1 else 0.0
+
+            ax.hlines(mu, xi - 0.20, xi + 0.20,
+                      color=MEAN_COLOR, linewidth=2.5, zorder=4)
+            ax.vlines(xi, mu - sd, mu + sd,
+                      color=MEAN_COLOR, linewidth=1.5, zorder=4)
+            for cap_y in [mu - sd, mu + sd]:
+                ax.hlines(cap_y, xi - 0.09, xi + 0.09,
+                          color=MEAN_COLOR, linewidth=1.5, zorder=4)
+
+            # Label to the right of the mean tick — avoids title overlap
+            ax.text(xi + 0.30, mu, f"{mu:.1f}",
+                    ha="left", va="center",
+                    fontsize=19, fontweight="bold", color=MEAN_COLOR)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(x_labels, fontsize=14)
+        ax.set_xlim(-0.55, 1.55)
+        ax.set_ylabel(ylabel, fontsize=14)
+        ax.set_ylim(bottom=0)
+        ax.tick_params(axis="y", labelsize=15)
+        ax.grid(True, axis="y", alpha=0.2, zorder=0)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+
+def _plot_cost_boxplot(ax_rounds: plt.Axes, ax_time: plt.Axes,
+                       exp3_df: pd.DataFrame,
+                       fs_val=20, fs_mean_sub=10,
+                       fs_ticks=14, fs_ylabel=14, fs_yticks=15) -> None:
+    """Box plots (with overlaid seed dots) for convergence rounds and training time."""
+    ns = [2, 3]
+    x_labels = ["2 institutions", "3 institutions"]
+    last_rounds = exp3_df.groupby(["n_sites", "seed"])["round"].max().reset_index()
+
+    DOT_COLOR  = "#1a2a3a"
+
+    _panel_specs = [
+        (ax_rounds, "Convergence Rounds",        lambda r, n: float(r),       "#c9a84c"),  # warm yellow
+        (ax_time,   "Total Training Time (min)", lambda r, n: r * _SEC_PER_ROUND[n] / 60, "#9d7b78"),  # dusty pink
+    ]
+
+    for ax, ylabel, val_fn, box_color in _panel_specs:
+        groups = []
+        for n in ns:
+            rows = last_rounds[last_rounds["n_sites"] == n]
+            groups.append([val_fn(r, n) for r in rows["round"].values])
+
+        bp = ax.boxplot(
+            groups, positions=[0, 1], widths=0.45, patch_artist=True,
+            medianprops=dict(color=DOT_COLOR, linewidth=2.5),
+            boxprops=dict(facecolor=box_color, alpha=0.55, linewidth=1.5),
+            whiskerprops=dict(color=DOT_COLOR, linewidth=1.5),
+            capprops=dict(color=DOT_COLOR, linewidth=2.0),
+            flierprops=dict(marker="o", markerfacecolor=DOT_COLOR,
+                            markersize=6, alpha=0.7, markeredgewidth=0),
+        )
+
+        for xi, vals in enumerate(groups):
+            n_pts = len(vals)
+            jitter = np.linspace(-0.08, 0.08, n_pts) if n_pts > 1 else [0.0]
+            for jx, v in zip(jitter, vals):
+                ax.scatter(xi + jx, v, color=DOT_COLOR, s=70, alpha=0.75,
+                           linewidths=0, zorder=5)
+            mu = float(np.mean(vals))
+            ax.text(xi + 0.30, mu, f"{mu:.1f}",
+                    ha="left", va="bottom",
+                    fontsize=fs_val, fontweight="bold", color=DOT_COLOR)
+            ax.text(xi + 0.30, mu, "(mean)",
+                    ha="left", va="top",
+                    fontsize=fs_mean_sub, color=DOT_COLOR)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(x_labels, fontsize=fs_ticks)
+        ax.set_xlim(-0.6, 1.75)
+        ax.set_ylabel(ylabel, fontsize=fs_ylabel)
+        ax.set_ylim(bottom=0)
+        ax.tick_params(axis="y", labelsize=fs_yticks)
+        ax.grid(True, axis="y", alpha=0.2, zorder=0)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp3",      default="results/exp3.csv",
-                        help="Unused; kept for backwards compatibility.")
+                        help="Training-loop CSV (convergence rounds and wall-clock).")
     parser.add_argument("--test_exp3", default="results/test_exp3.csv")
     parser.add_argument("--output",    default="figures/scalability.png")
     args = parser.parse_args()
 
     test_df = pd.read_csv(args.test_exp3)
+    exp3_df = pd.read_csv(args.exp3)
 
-    fig, (ax_slope, ax_cost) = plt.subplots(
-        1, 2, figsize=(10.5, 4.8),
-        gridspec_kw={"width_ratios": [5, 3]},
+    fig, (ax_sl, ax_rnd, ax_tm) = plt.subplots(
+        1, 3, figsize=(22, 9),
+        gridspec_kw={"width_ratios": [4, 3, 3]},
     )
     fig.suptitle(
-        "Scalability: 2 vs. 3 institutions",
-        fontweight="normal", y=1.01,
+        "Scalability: 2 vs. 3 Institutions",
+        fontsize=35, fontweight="normal",
     )
+    _plot_slopegraph(ax_sl, test_df,
+                     fs_annot=31, fs_ticks=26, fs_ylabel=28, fs_title=32,
+                     fs_yticks=26, annot_bold=True)
+    ax_rnd.set_title("Convergence Rounds", fontsize=32, pad=6)
+    ax_tm.set_title("Training Time (min)", fontsize=32, pad=6)
+    _plot_cost_boxplot(ax_rnd, ax_tm, exp3_df,
+                       fs_val=31, fs_mean_sub=18,
+                       fs_ticks=26, fs_ylabel=28, fs_yticks=26)
 
-    _plot_slopegraph(ax_slope, test_df)
-    _plot_cost(ax_cost)
-
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.output, dpi=150, bbox_inches="tight")
     print(f"Saved: {args.output}")

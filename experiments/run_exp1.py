@@ -68,6 +68,8 @@ def main():
     parser.add_argument("--patience",      type=int, default=15,
                         help="Early stopping patience in rounds (0 = disabled)")
     args = parser.parse_args()
+    if args.use_synthetic:
+        _p = Path(args.output); args.output = str(_p.parent / f"smoketest_{_p.name}")
 
     # Pre-build loaders once — all configs share the same data, only task weights differ.
     # Avoids 12 repeated GPFS reads (4 configs × 3 seeds) that dominate runtime.

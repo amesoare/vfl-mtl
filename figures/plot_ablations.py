@@ -123,13 +123,13 @@ def draw_panel(ax, mu, sd, metric, xlabel, title, ref_mu, show_yticks=True):
         # annotation
         if model == "VFL-MTL":
             ax.text(val + err + 0.004, yi, f"{val:.3f}",
-                    va="center", ha="left", fontsize=11, fontweight="bold", color="#444444")
+                    va="center", ha="left", fontsize=20, fontweight="bold", color="#444444")
         else:
             delta = val - ref_mu
             sign  = "+" if delta >= 0 else "-"
             ann_color = _C[4] if delta >= 0 else _C[1]
             ax.text(val + err + 0.004, yi, f"{sign}{abs(delta):.3f}",
-                    va="center", ha="left", fontsize=11, fontweight="bold", color=ann_color)
+                    va="center", ha="left", fontsize=20, fontweight="bold", color=ann_color)
 
     # reference vertical line at VFL-MTL mean
     ax.axvline(ref_mu, color=_C[0], linestyle="--", linewidth=1.0, alpha=0.7, zorder=1)
@@ -141,12 +141,12 @@ def draw_panel(ax, mu, sd, metric, xlabel, title, ref_mu, show_yticks=True):
 
     ax.set_yticks(y_pos)
     if show_yticks:
-        ax.set_yticklabels([LABELS[m] for m in MODEL_ORDER], fontsize=7.5)
+        ax.set_yticklabels([LABELS[m] for m in MODEL_ORDER], fontsize=14)
     else:
         ax.set_yticklabels([""] * len(MODEL_ORDER))
     ax.tick_params(left=False)
 
-    ax.set_xlabel(xlabel, fontsize=9)
+    ax.set_xlabel(xlabel, fontsize=15)
     ax.set_title(title, pad=6)
     ax.set_xlim(x_lo, x_hi)
     ax.set_ylim(min(y_pos) - 0.5, max(y_pos) + 0.5)
@@ -159,7 +159,7 @@ def draw_panel(ax, mu, sd, metric, xlabel, title, ref_mu, show_yticks=True):
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
     ax2.set_yticks(group_y)
-    ax2.set_yticklabels(GROUP_LABELS, fontsize=7, color="#666666")
+    ax2.set_yticklabels(GROUP_LABELS, fontsize=12, color="#666666")
     ax2.tick_params(right=False, length=0)
     for spine in ax2.spines.values():
         spine.set_visible(False)
@@ -189,15 +189,15 @@ def main():
 
     plt.rcParams.update({
         "figure.dpi":       150,
-        "font.size":        11,
+        "font.size":        15,
         "font.family":      "serif",
         "font.serif":       ["Times New Roman", "Times", "DejaVu Serif"],
-        "axes.titlesize":   12,
+        "axes.titlesize":   17,
         "axes.titleweight": "normal",
-        "axes.labelsize":   11,
-        "xtick.labelsize":  10,
-        "ytick.labelsize":  10,
-        "legend.fontsize":  10,
+        "axes.labelsize":   15,
+        "xtick.labelsize":  14,
+        "ytick.labelsize":  14,
+        "legend.fontsize":  12,
         "axes.linewidth":   0.8,
         "xtick.major.size": 3,
         "ytick.major.size": 3,

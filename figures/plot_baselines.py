@@ -6,11 +6,13 @@ Reads (gracefully skips if missing):
   results/local_only_B.csv
   results/local_only_C.csv
   results/centralized.csv
-  results/exp1.csv   (VFL-MTL rows only)
+  results/exp1.csv             (VFL-MTL rows only)
+  results/test_results_nodp.csv
 
 Produces:
   figures/baselines_learning_curves.png  — val AUC per epoch/round, mean ± std
   figures/baselines_final_metrics.png    — final-epoch bar chart per task
+  figures/baselines_test_metrics.png     — test-set Cleveland lollipop per task
 """
 
 import sys
@@ -42,15 +44,15 @@ PALETTE = {
 
 plt.rcParams.update({
     "figure.dpi":        150,
-    "font.size":         11,
+    "font.size":         15,
     "font.family":       "serif",
     "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":    12,
+    "axes.titlesize":    17,
     "axes.titleweight":  "normal",
-    "axes.labelsize":    11,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   10,
+    "axes.labelsize":    15,
+    "xtick.labelsize":   14,
+    "ytick.labelsize":   14,
+    "legend.fontsize":   12,
 })
 
 OUT = Path("figures")
@@ -151,7 +153,7 @@ for i, (ax, local_df, loc_metric, cen_metric, vfl_metric, st_df, st_key, title) 
     ax.spines["right"].set_visible(False)
     ax.grid(True, alpha=0.3)
     if any_plotted:
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=9, loc="lower right")
 
 plt.tight_layout()
 fig.savefig(OUT / "baselines_learning_curves.png", dpi=150, bbox_inches="tight")
@@ -159,7 +161,7 @@ print("Saved: figures/baselines_learning_curves.png")
 plt.close()
 
 
-# ── Figure 2: Final-epoch bar chart ──────────────────────────────────────────
+# ── Figure 2: Final-epoch validation lollipop ────────────────────────────────
 
 bar_rows = []  # (task_label, model_label, mean, std, color)
 
@@ -172,7 +174,7 @@ task_defs = [
 for task_label, loc_df, loc_m, cen_df, cen_m, st_df, st_m, vfl_df, vfl_m, loc_key, st_key in task_defs:
     if loc_df is not None and loc_m in loc_df.columns:
         mu, sd = _final_stats(loc_df, loc_m)
-        bar_rows.append((task_label, f"local\n({loc_key[-1]})", mu, sd, PALETTE[loc_key]))
+        bar_rows.append((task_label, f"local ({loc_key[-1]})", mu, sd, PALETTE[loc_key]))
     if cen_df is not None and cen_m in cen_df.columns:
         mu, sd = _final_stats(cen_df, cen_m)
         bar_rows.append((task_label, "centralized", mu, sd, PALETTE["centralized_oracle"]))
@@ -184,45 +186,69 @@ for task_label, loc_df, loc_m, cen_df, cen_m, st_df, st_m, vfl_df, vfl_m, loc_ke
         bar_rows.append((task_label, "PRISM", mu, sd, PALETTE["VFL-MTL"]))
 
 if bar_rows:
-    _order  = ["IHM", "Decomp", "Pheno"]
-    tasks   = sorted(set(r[0] for r in bar_rows),
-                     key=lambda t: next((i for i, o in enumerate(_order) if o in t), 99))
-    models  = list(dict.fromkeys(r[1] for r in bar_rows))
-    n_tasks = len(tasks)
-    n_models= len(models)
-    x       = np.arange(n_tasks)
-    width   = 0.8 / n_models
+    _VAL_LP_ORDER = [
+        ("IHM\nAUC-ROC",     ["centralized", "PRISM", "ST-IHM",    "local (A)"]),
+        ("Decomp\nAUC-ROC",  ["centralized", "PRISM", "ST-Decomp", "local (B)"]),
+        ("Pheno\nMacro-AUC", ["centralized", "PRISM", "ST-Pheno",  "local (C)"]),
+    ]
+    _val_lkup = {(r[0], r[1]): r[2:] for r in bar_rows}
 
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    for j, model in enumerate(models):
-        model_rows = {r[0]: r for r in bar_rows if r[1] == model}
-        means = [model_rows[t][2] if t in model_rows else np.nan for t in tasks]
-        stds  = [model_rows[t][3] if t in model_rows else 0.0     for t in tasks]
-        color = model_rows[list(model_rows.keys())[0]][4] if model_rows else _C[6]
-        offset = (j - n_models / 2 + 0.5) * width
-        bars = ax.bar(x + offset, means, width * 0.9, yerr=stds, capsize=4,
-                      color=color, alpha=0.88, edgecolor="white", label=model)
-        for bar, m in zip(bars, means):
-            if not np.isnan(m):
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.012,
-                        f"{m:.3f}", ha="center", va="bottom", fontsize=11, fontweight="normal")
+    fig_v, axes_v = plt.subplots(1, 3, figsize=(22, 10))
+    fig_v.suptitle(
+        "Validation Performance: Baseline Comparison",
+        fontsize=35, fontweight="normal",
+    )
 
-    ax.axhline(0.5, color="grey", linestyle="--", linewidth=0.8, label="Random (0.5)")
-    ax.set_xticks(x)
-    ax.set_xticklabels(tasks)
-    ax.set_ylim(0.4, 1.05)
-    ax.set_ylabel("Val AUC (mean ± std, 3 seeds)")
-    ax.set_title("Final epoch performance per task across model configurations", fontweight="normal")
-    ax.legend(fontsize=9, loc="upper right")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.grid(True, alpha=0.3, axis="y")
-    plt.tight_layout()
-    fig.savefig(OUT / "baselines_final_metrics.png", dpi=150, bbox_inches="tight")
-    print("Saved: figures/baselines_final_metrics.png")
+    for ax, (task_label, model_order) in zip(axes_v, _VAL_LP_ORDER):
+        lp_models, lp_means, lp_stds, lp_colors = [], [], [], []
+
+        for disp in reversed(model_order):
+            key = (task_label, disp)
+            if key in _val_lkup:
+                mu, sd, color = _val_lkup[key]
+                lp_models.append(disp)
+                lp_means.append(mu)
+                lp_stds.append(sd)
+                lp_colors.append(color)
+
+        if not lp_models:
+            continue
+
+        y_pos   = np.arange(len(lp_models))
+        n_items = len(lp_models)
+
+        xlim_left  = max(0.0, min(m - s for m, s in zip(lp_means, lp_stds)) - 0.05)
+        xlim_right = max(m + s for m, s in zip(lp_means, lp_stds)) + 0.09
+
+        for yi, (mu, sd, color) in enumerate(zip(lp_means, lp_stds, lp_colors)):
+            ax.hlines(yi, xlim_left, max(xlim_left, mu - sd), color=color,
+                      linewidth=2.0, alpha=0.35, zorder=2)
+            ax.errorbar(mu, yi, xerr=sd, fmt="none",
+                        color=color, elinewidth=3.0, capsize=8, capthick=2.8,
+                        alpha=0.90, zorder=3)
+            ax.scatter(mu, yi, color=color, s=160, zorder=4, linewidths=0)
+            ax.text(mu, yi + 0.22, f"{mu:.3f}",
+                    va="bottom", ha="center", fontsize=31,
+                    fontweight="bold", color="#111111")
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(lp_models, fontsize=28)
+        ax.set_xlabel("Val AUC", fontsize=28)
+        ax.set_title(task_label.replace("\n", " "), fontsize=32, pad=12, fontweight="normal")
+        ax.set_xlim(xlim_left, min(xlim_right, 1.06))
+        ax.set_ylim(-0.6, n_items - 0.2)
+        ax.tick_params(axis="x", labelsize=26)
+        ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%.2f"))
+        ax.grid(True, axis="x", alpha=0.25)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    fig_v.savefig(OUT / "baselines_val_metrics.png", dpi=150, bbox_inches="tight")
+    print("Saved: figures/baselines_val_metrics.png")
     plt.close()
 else:
-    print("  [SKIP] No data available for bar chart")
+    print("  [SKIP] No data available for validation lollipop")
 
 # ── Console summary ───────────────────────────────────────────────────────────
 print("\n── Final metrics (mean ± std, 3 seeds) ──")
@@ -230,93 +256,94 @@ for task, model, mu, sd, _ in bar_rows:
     print(f"  {task.replace(chr(10),' '):20s}  {model:20s}  {mu:.4f} ± {sd:.4f}")
 
 
-# ── Figure 3: baselines_test_metrics.png — from results/test_results_nodp.csv ──
+# ── Figure 3: baselines_test_metrics.png — Cleveland lollipop ────────────────
 _trnodp = _load(RES / "test_results_nodp.csv")
 
 if _trnodp is not None:
-    _DISP3 = {"VFL-MTL": "PRISM", "centralized_oracle": "centralized"}
-    _trnodp["model_disp"] = _trnodp["model"].map(lambda m: _DISP3.get(m, m))
+    _DISP_THESIS = {"VFL-MTL": "PRISM", "centralized_oracle": "centralized"}
+    _trnodp_thesis = _trnodp.copy()
+    if "model_disp" not in _trnodp_thesis.columns:
+        _trnodp_thesis["model_disp"] = _trnodp_thesis["model"].map(
+            lambda m: _DISP_THESIS.get(m, m)
+        )
 
-    _PAL3 = {
-        "local_A":      PALETTE["local_A"],
-        "local_B":      PALETTE["local_B"],
-        "local_C":      PALETTE["local_C"],
-        "centralized":  PALETTE["centralized_oracle"],
-        "ST-IHM":       PALETTE.get("ST-IHM",   _C[5]),
-        "ST-Decomp":    PALETTE.get("ST-Decomp", _C[6]),
-        "ST-Pheno":     PALETTE.get("ST-Pheno",  _C[5]),
-        "PRISM":        PALETTE["VFL-MTL"],
+    _PAL_THESIS = {
+        "local_A":     PALETTE["local_A"],
+        "local_B":     PALETTE["local_B"],
+        "local_C":     PALETTE["local_C"],
+        "centralized": PALETTE["centralized_oracle"],
+        "ST-IHM":      PALETTE.get("ST-IHM",   _C[5]),
+        "ST-Decomp":   PALETTE.get("ST-Decomp", _C[6]),
+        "ST-Pheno":    PALETTE.get("ST-Pheno",  _C[5]),
+        "PRISM":       PALETTE["VFL-MTL"],
     }
 
-    _TEST_TASK_DEFS = [
-        ("IHM\nAUC-ROC",     "ihm_auc_roc",     ["local_A", "centralized", "ST-IHM",    "PRISM"]),
-        ("Decomp\nAUC-ROC",  "decomp_auc_roc",  ["PRISM",   "centralized", "ST-Decomp", "local_B"]),
-        ("Pheno\nMacro-AUC", "pheno_macro_auc",  ["centralized", "local_C", "ST-Pheno",  "PRISM"]),
+    _LOLLIPOP_DEFS = [
+        ("IHM AUC-ROC",     "ihm_auc_roc",    ["centralized", "PRISM", "ST-IHM",   "local_A"]),
+        ("Decomp AUC-ROC",  "decomp_auc_roc", ["centralized", "PRISM", "ST-Decomp","local_B"]),
+        ("Pheno Macro-AUC", "pheno_macro_auc", ["centralized", "PRISM", "ST-Pheno", "local_C"]),
     ]
 
-    t3_rows = []
-    for task_label, metric, model_order in _TEST_TASK_DEFS:
-        for disp in model_order:
-            vals = _trnodp[_trnodp["model_disp"] == disp][metric].dropna()
+    fig_lp, axes_lp = plt.subplots(1, 3, figsize=(22, 10))
+    fig_lp.suptitle(
+        "Held-Out Test Performance: Baseline Comparison",
+        fontsize=35, fontweight="normal",
+    )
+
+    for ax, (task_label, metric, model_order) in zip(axes_lp, _LOLLIPOP_DEFS):
+        lp_models: list[str]   = []
+        lp_means:  list[float] = []
+        lp_stds:   list[float] = []
+        lp_colors: list[str]   = []
+
+        for disp in reversed(model_order):
+            vals = _trnodp_thesis[_trnodp_thesis["model_disp"] == disp][metric].dropna()
             if len(vals):
-                t3_rows.append((task_label, disp,
-                                float(vals.mean()),
-                                float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
-                                _PAL3.get(disp, _C[6])))
+                lp_models.append(disp)
+                lp_means.append(float(vals.mean()))
+                lp_stds.append(float(vals.std(ddof=1)) if len(vals) > 1 else 0.0)
+                lp_colors.append(_PAL_THESIS.get(disp, _C[6]))
 
-    if t3_rows:
-        # Build lookup: (task, model) → (mean, std, color)
-        _lookup = {(r[0], r[1]): r[2:] for r in t3_rows}
+        y_pos   = np.arange(len(lp_models))
+        n_items = len(lp_models)
 
-        _ord3   = ["IHM", "Decomp", "Pheno"]
-        tasks3  = sorted(set(r[0] for r in t3_rows),
-                         key=lambda t: next((i for i, o in enumerate(_ord3) if o in t), 99))
-        x3      = np.arange(len(tasks3))
+        # Axis bounds: zoom into data range (Cleveland plot — zero baseline not needed)
+        xlim_left  = max(0.0, min(mu - sd for mu, sd in zip(lp_means, lp_stds)) - 0.05) if lp_means else 0.0
+        xlim_right = (max(mu + sd for mu, sd in zip(lp_means, lp_stds)) + 0.09) if lp_means else 1.0
 
-        # Each task group has its own ordered model list (4 bars, tight packing)
-        n_bars_per_group = max(len(mo) for _, _, mo in _TEST_TASK_DEFS)
-        width3 = 0.55 / n_bars_per_group
+        for yi, (mu, sd, color) in enumerate(zip(lp_means, lp_stds, lp_colors)):
+            # Short reference line from left axis edge to the CI lower bound
+            ax.hlines(yi, xlim_left, max(xlim_left, mu - sd), color=color,
+                      linewidth=2.0, alpha=0.35, zorder=2)
+            # Horizontal CI bar with caps
+            ax.errorbar(mu, yi, xerr=sd, fmt="none",
+                        color=color, elinewidth=3.0, capsize=8, capthick=2.8,
+                        alpha=0.90, zorder=3)
+            ax.scatter(mu, yi, color=color, s=160, zorder=4, linewidths=0)
+            # Label floats just above the dot endpoint
+            ax.text(mu, yi + 0.22, f"{mu:.3f}",
+                    va="bottom", ha="center", fontsize=31,
+                    fontweight="bold", color="#111111")
 
-        fig, ax = plt.subplots(figsize=(9, 4.5))
-
-        legend_handles = {}
-        for ti, task_label in enumerate(tasks3):
-            # find the model order for this task from _TEST_TASK_DEFS
-            task_models = next(mo for tl, _, mo in _TEST_TASK_DEFS if tl == task_label)
-            n = len(task_models)
-            for k, model in enumerate(task_models):
-                key = (task_label, model)
-                if key not in _lookup:
-                    continue
-                mu, sd, color = _lookup[key]
-                offset = (k - n / 2 + 0.5) * width3
-                bars = ax.bar(ti + offset, mu, width3 * 0.9,
-                              yerr=sd, capsize=4,
-                              color=color, alpha=0.88, edgecolor="white",
-                              error_kw={"linewidth": 1.0})
-                ax.text(ti + offset, mu + sd + 0.012, f"{mu:.3f}",
-                        ha="center", va="bottom", fontsize=11, fontweight="bold")
-                if model not in legend_handles:
-                    legend_handles[model] = bars[0]
-
-        ax.axhline(0.5, color="grey", linestyle="--", linewidth=0.8, label="Random (0.5)")
-        ax.set_xticks(x3)
-        ax.set_xticklabels(tasks3)
-        ax.set_ylim(0.4, 1.05)
-        ax.set_ylabel("Test AUC (mean ± std, 3 seeds)")
-        ax.set_title("Model Inference on Test Set: Per-Task AUC Across Configurations",
-                     fontweight="normal")
-
-        from matplotlib.lines import Line2D
-        rand_handle = Line2D([0], [0], color="grey", linestyle="--", linewidth=0.8)
-        handles = [rand_handle] + list(legend_handles.values())
-        labels  = ["Random (0.5)"] + list(legend_handles.keys())
-        ax.legend(handles, labels, fontsize=9, loc="upper right")
-
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(lp_models, fontsize=28)
+        ax.set_xlabel("Test AUC", fontsize=28)
+        ax.set_title(task_label, fontsize=32, pad=12, fontweight="normal")
+        ax.set_xlim(xlim_left, min(xlim_right, 1.06))
+        ax.set_ylim(-0.6, n_items - 0.2)
+        ax.tick_params(axis="x", labelsize=26)
+        ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%.2f"))
+        ax.grid(True, axis="x", alpha=0.25)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.grid(True, alpha=0.3, axis="y")
-        plt.tight_layout()
-        fig.savefig(OUT / "baselines_test_metrics.png", dpi=150, bbox_inches="tight")
-        print("Saved: figures/baselines_test_metrics.png")
-        plt.close()
+        # Add random baseline only if 0.5 falls inside the finalised axis range
+        x_lo, x_hi = ax.get_xlim()
+        if x_lo <= 0.5 <= x_hi:
+            ax.axvline(0.5, color="grey", linestyle="--", linewidth=0.9,
+                       label="Random (0.5)")
+            ax.legend(fontsize=22, loc="lower right")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    fig_lp.savefig(OUT / "baselines_test_metrics.png", dpi=150, bbox_inches="tight")
+    print("Saved: figures/baselines_test_metrics.png")
+    plt.close()

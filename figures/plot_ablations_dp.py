@@ -36,14 +36,15 @@ TASKS = [
 
 _PLT_DEFAULTS = {
     "figure.dpi":       150,
-    "font.size":        10,
+    "font.size":        15,
     "font.family":      "serif",
     "font.serif":       ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":   10,
-    "axes.labelsize":   9,
-    "xtick.labelsize":  9,
-    "ytick.labelsize":  9,
-    "legend.fontsize":  8.5,
+    "axes.titlesize":   17,
+    "axes.titleweight": "normal",
+    "axes.labelsize":   15,
+    "xtick.labelsize":  14,
+    "ytick.labelsize":  14,
+    "legend.fontsize":  12,
 }
 
 # Brand palette — shared across all figure scripts in this repo
@@ -115,7 +116,7 @@ def _fill_abl1(axes, df: pd.DataFrame) -> None:
                         capsize=4, capthick=1.5, elinewidth=1.5, markersize=9,
                         zorder=5)
             ax.text(xi, m + s + 0.008, f"{m:.3f}",
-                    ha="center", va="bottom", fontsize=8.5,
+                    ha="center", va="bottom", fontsize=14,
                     fontweight="bold", color=color)
 
         # dashed line connecting means + Δ annotation
@@ -128,7 +129,7 @@ def _fill_abl1(axes, df: pd.DataFrame) -> None:
             data_spread = abl1[metric].dropna()
             y_offset = max(data_spread.max() - data_spread.min(), 0.05) * 0.18
             ax.text(0.5, mid_y + y_offset, f"{sign}{delta:.3f}",
-                    ha="center", va="bottom", fontsize=11,
+                    ha="center", va="bottom", fontsize=14,
                     color=color, fontweight="bold",
                     bbox=dict(facecolor="white", edgecolor=color,
                               linewidth=0.6, alpha=1.0, pad=2.5,
@@ -137,13 +138,13 @@ def _fill_abl1(axes, df: pd.DataFrame) -> None:
         # clinical utility floor
         ax.axhline(floor, color=_FLOOR_COLOR, linestyle=":", linewidth=0.9, zorder=1)
         ax.text(0.98, floor + 0.005, f"floor={floor:.2f}",
-                ha="right", va="bottom", fontsize=7, color=_FLOOR_COLOR,
+                ha="right", va="bottom", fontsize=12, color=_FLOOR_COLOR,
                 transform=ax.get_yaxis_transform())
 
         ax.set_xticks(x)
-        ax.set_xticklabels(xlabels, fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=9)
-        ax.set_title(ylabel, fontsize=9, pad=6)
+        ax.set_xticklabels(xlabels, fontsize=14)
+        ax.set_ylabel(ylabel, fontsize=15)
+        ax.set_title(ylabel, fontsize=17, pad=6)
         ax.set_xlim(-0.35, 1.35)
         ax.grid(True, axis="y", alpha=0.2, zorder=0)
         for spine in ("top", "right"):
@@ -157,7 +158,7 @@ def plot_abl1(df: pd.DataFrame, output: Path) -> None:
     fig.suptitle(
         "Uniform vs. stratified noise allocation at ε = 5  "
         "(grey lines = per-seed trajectories, bold = mean ± std)",
-        fontsize=10, y=0.99,
+        fontsize=17, y=0.99,
     )
     _fill_abl1(axes, df)
     # Shared y-axis from 0 — keeps the absolute AUC scale honest and
@@ -168,7 +169,7 @@ def plot_abl1(df: pd.DataFrame, output: Path) -> None:
     global_hi = max(all_task_maxes + all_floors) + 0.08
     axes[0].set_ylim(0, global_hi)   # propagates to all panels via sharey
     # shared y-axis: single "AUC" label on leftmost panel only
-    axes[0].set_ylabel("AUC", fontsize=9)
+    axes[0].set_ylabel("AUC", fontsize=15)
     for ax in axes[1:]:
         ax.set_ylabel("")
     fig.tight_layout()
@@ -185,7 +186,7 @@ def _fill_abl2(axes, df: pd.DataFrame) -> None:
     abl2    = df[df["ablation"] == "abl2"].copy()
     configs = ["ihm_decomp", "ihm_pheno"]
     colors  = [_C_IHM_DECOMP, _C_IHM_PHENO]
-    xlabels = ["IHM + Decomp\n(high rho)", "IHM + Pheno\n(low rho)"]
+    xlabels = ["IHM+Decomp (high ρ)", "IHM+Pheno (low ρ)"]
 
     panels = [
         ("rho",                "Gradient coupling rho",  None),
@@ -208,17 +209,17 @@ def _fill_abl2(axes, df: pd.DataFrame) -> None:
                         markerfacecolor=mfc, markeredgewidth=1.5,
                         capsize=4, capthick=1.0, elinewidth=1.0, markersize=9, zorder=3)
             ax.text(ci, m + s + 0.008, f"{m:.3f}",
-                    ha="center", va="bottom", fontsize=8.5, fontweight="bold", color=color)
+                    ha="center", va="bottom", fontsize=14, fontweight="bold", color=color)
 
         if ref is not None:
             ax.axhline(ref, color=_FLOOR_COLOR, linestyle="--",
                        linewidth=0.9, label=f"Random ({ref})")
-            ax.legend(fontsize=7)
+            ax.legend(fontsize=12)
 
         ax.set_xticks(x)
-        ax.set_xticklabels(xlabels, fontsize=8)
-        ax.set_ylabel(ylabel, fontsize=9)
-        ax.set_title(ylabel, fontsize=9, pad=6)
+        ax.set_xticklabels(xlabels, fontsize=14)
+        ax.set_ylabel(ylabel, fontsize=15)
+        ax.set_title(ylabel, fontsize=17, pad=6)
 
         valid = [m for m in means if not np.isnan(m)]
         valid_s = [s for s in stds if not np.isnan(s)]
@@ -237,7 +238,7 @@ def plot_abl2(df: pd.DataFrame, output: Path) -> None:
         print("[abl2] no data - skipping"); return
     fig, axes = plt.subplots(1, 2, figsize=(7, 3.5))
     fig.suptitle("Coupling amplification: task pair comparison at epsilon=5",
-                 fontsize=10, y=1.02)
+                 fontsize=17, y=1.02)
     _fill_abl2(axes, df)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -258,7 +259,7 @@ def _fill_abl3(axes, df: pd.DataFrame) -> None:
     embed_dims = sorted(abl3["embed_dim"].dropna().unique().astype(int))
     x = np.arange(len(_EPS_ORDER))
 
-    for ax, (metric, ylabel, floor) in zip(axes, TASKS):
+    for i, (ax, (metric, ylabel, floor)) in enumerate(zip(axes, TASKS)):
         for ed in embed_dims:
             sub   = abl3[abl3["embed_dim"] == ed]
             means, stds = [], []
@@ -274,12 +275,16 @@ def _fill_abl3(axes, df: pd.DataFrame) -> None:
                         capsize=3, label=f"embed={ed}",
                         color=_EMBED_COLORS.get(ed, "#888888"))
 
-        ax.axhline(floor, color=_FLOOR_COLOR, linestyle="--", linewidth=0.9,
-                   label=f"Floor ({floor})")
+        ax.axhline(floor, color=_FLOOR_COLOR, linestyle="--", linewidth=0.9)
+        ax.text(0.02, floor + 0.008, f"floor={floor:.2f}",
+                ha="left", va="bottom", fontsize=10, color=_FLOOR_COLOR,
+                transform=ax.get_yaxis_transform())
         ax.set_xticks(x); ax.set_xticklabels(_EPS_LABELS)
-        ax.set_xlabel("Privacy budget epsilon")
+        ax.set_xlabel("Privacy budget ε")
         ax.set_ylabel(ylabel); ax.set_title(ylabel)
-        ax.legend(fontsize=7.5); ax.grid(True, alpha=0.25)
+        if i == 0:
+            ax.legend(fontsize=12)
+        ax.grid(True, alpha=0.25)
         ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
 
@@ -289,7 +294,7 @@ def plot_abl3(df: pd.DataFrame, output: Path) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(12, 4.0), sharey=False)
     fig.suptitle(
         "Per-task AUC-ROC as a function of privacy budget epsilon across embedding dimensions",
-        fontsize=10, y=1.02,
+        fontsize=17, y=1.02,
     )
     _fill_abl3(axes, df)
     fig.tight_layout()
@@ -326,7 +331,7 @@ def plot_unified(df: pd.DataFrame, df3: pd.DataFrame, output: Path) -> None:
     global_hi = max(all_task_maxes + all_floors) + 0.08
     for ax in abl1_axes:
         ax.set_ylim(0, global_hi)
-    abl1_axes[0].set_ylabel("AUC", fontsize=9)
+    abl1_axes[0].set_ylabel("AUC", fontsize=15)
     for ax in abl1_axes[1:]:
         ax.set_ylabel("")
         ax.tick_params(labelleft=False)
@@ -344,7 +349,7 @@ def plot_unified(df: pd.DataFrame, df3: pd.DataFrame, output: Path) -> None:
     for label, ax_key in row_labels:
         y_top = axd[ax_key].get_position().y1 + 0.018
         fig.text(0.5, y_top, label, ha="center", va="bottom",
-                 fontsize=12, fontweight="normal", color="#333333")
+                 fontsize=15, fontweight="normal", color="#333333")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150, bbox_inches="tight")

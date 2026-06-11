@@ -24,14 +24,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 plt.rcParams.update({
     "figure.dpi":        150,
-    "font.size":         11,
+    "font.size":         15,
     "font.family":       "serif",
     "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":    12,
+    "axes.titlesize":    17,
     "axes.titleweight":  "normal",
-    "axes.labelsize":    11,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
+    "axes.labelsize":    15,
+    "xtick.labelsize":   14,
+    "ytick.labelsize":   14,
+    "legend.fontsize":   12,
 })
 
 BRAND_CMAP = mcolors.LinearSegmentedColormap.from_list(
@@ -75,7 +76,7 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 4))
     sns.heatmap(mat, annot=True, fmt=".3f", center=0,
                 vmin=-vmax, vmax=vmax, cmap=BRAND_CMAP,
-                linewidths=0.5, ax=ax, annot_kws={"size": 9})
+                linewidths=0.5, ax=ax, annot_kws={"size": 16})
     ax.set_title("Loss reduction relative to single-task IHM baseline per task configuration")
     ax.set_xlabel("")
     ax.set_ylabel("Model Configuration")

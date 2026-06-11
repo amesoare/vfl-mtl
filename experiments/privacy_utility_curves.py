@@ -1,7 +1,7 @@
 """
 experiments/privacy_utility_curves.py — Paper 2 Step 6: ε sweep (SRQ1 + SRQ2).
 
-Uniform sweep: ε ∈ {∞ (no DP), 10, 5, 2, 1, 0.5}; 5 seeds per level.
+Uniform sweep: ε ∈ {∞ (no DP), 10, 5, 2, 1, 0.5}; seeds per level.
 Stratified run: ε_total=5 allocated as ε_IHM=2, ε_Decomp=2, ε_Pheno=1.
 
 For each (mode, ε_level, seed) triple, one round-level row is written per round:
@@ -20,9 +20,16 @@ Usage
   # Smoke test (synthetic, fast):
   python experiments/privacy_utility_curves.py --use_synthetic --n_rounds 5
 
-  # Full run on Snellius:
+  # MIMIC-III (default):
   python experiments/privacy_utility_curves.py \
-      --splits_dir /home/asoare/vfl_mlt/data/vertical_splits \
+      --splits_dir /path/to/data/vertical_splits \
+      --n_rounds 100 --device cuda
+
+  # eICU (external validity):
+  python experiments/privacy_utility_curves.py \
+      --dataset eicu \
+      --splits_dir /path/to/data/eicu_vertical_splits \
+      --output results/eicu_privacy_utility_combined.csv \
       --n_rounds 100 --device cuda
 """
 
@@ -144,11 +151,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--splits_dir",    default="data/vertical_splits")
+    parser.add_argument("--dataset",       default="mimic", choices=["mimic", "eicu"],
+                        help="Dataset to use: 'mimic' (default) or 'eicu' (external validity).")
+    parser.add_argument("--splits_dir",    default=None,
+                        help="Path to vertical splits directory. Defaults to "
+                             "data/vertical_splits (MIMIC) or data/eicu_vertical_splits (eICU).")
     parser.add_argument("--n_rounds",      type=int, default=100)
     parser.add_argument("--batch_size",    type=int, default=64)
     parser.add_argument("--device",        default="cuda" if __import__("torch").cuda.is_available() else "cpu")
-    parser.add_argument("--output",        default="results/privacy_utility.csv")
+    parser.add_argument("--output",        default=None,
+                        help="Output CSV path. Defaults to results/privacy_utility_combined.csv "
+                             "(MIMIC) or results/eicu_privacy_utility_combined.csv (eICU).")
     parser.add_argument("--use_synthetic", action="store_true")
     parser.add_argument("--n_synthetic",   type=int, default=256)
     parser.add_argument("--patience",      type=int, default=0,
@@ -163,6 +176,16 @@ def main() -> None:
                         help="DataLoader worker processes. On Snellius with --cpus-per-task=18, "
                              "set to 4 to use reserved CPUs for data loading (no extra SBU cost).")
     args = parser.parse_args()
+
+    # Resolve dataset-dependent defaults
+    is_eicu = args.dataset == "eicu"
+    if args.splits_dir is None:
+        args.splits_dir = "data/eicu_vertical_splits" if is_eicu else "data/vertical_splits"
+    if args.output is None:
+        args.output = (
+            "results/eicu_privacy_utility_combined.csv" if is_eicu
+            else "results/privacy_utility_combined.csv"
+        )
 
     # Filter ε levels if --epsilon_levels was provided
     if args.epsilon_levels is not None:
@@ -179,7 +202,7 @@ def main() -> None:
             # Default: run everything (all levels + stratified) for backwards-compat
             args.run_stratified = True
 
-    output_path = Path(args.output)
+    output_path = Path(args.output)  # type: ignore[arg-type]  # resolved above
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ---- Data ----
@@ -187,16 +210,22 @@ def main() -> None:
     prebuilt = None
 
     if not args.use_synthetic:
-        print("[privacy_curves] Pre-loading data loaders...")
+        print(f"[privacy_curves] Pre-loading data loaders (dataset={args.dataset})...")
         project_root = Path(args.splits_dir).parents[1]
-        site_b_csv   = Path(args.splits_dir) / "site_B_labs.csv"
-        _b = pd.read_csv(site_b_csv, usecols=["y_decomp", "split"])
-        pos_rate = float(_b[_b["split"] == "train"]["y_decomp"].mean())
-        decomp_pos_weight = (1.0 - pos_rate) / pos_rate
-        print(f"[privacy_curves] decomp pos_weight={decomp_pos_weight:.1f}")
+
+        # pos_weight only applies to binary decomp (MIMIC); eICU uses regression (RLOS)
+        if not is_eicu:
+            site_b_csv = Path(args.splits_dir) / "site_B_labs.csv"
+            _b = pd.read_csv(site_b_csv, usecols=["y_decomp", "split"])
+            pos_rate = float(_b[_b["split"] == "train"]["y_decomp"].mean())
+            decomp_pos_weight = (1.0 - pos_rate) / pos_rate
+            print(f"[privacy_curves] decomp pos_weight={decomp_pos_weight:.1f}")
+
         prebuilt = {
-            "train": build_site_loaders(project_root, "train", args.batch_size, num_workers=args.num_workers),
-            "val":   build_site_loaders(project_root, "val",   args.batch_size, num_workers=args.num_workers),
+            "train": build_site_loaders(project_root, "train", args.batch_size,
+                                        num_workers=args.num_workers, dataset=args.dataset),
+            "val":   build_site_loaders(project_root, "val",   args.batch_size,
+                                        num_workers=args.num_workers, dataset=args.dataset),
             "decomp_pos_weight": decomp_pos_weight,
         }
 
@@ -239,8 +268,12 @@ def main() -> None:
             stratified_ok = False
 
     # ---- Base TrainConfig shared across all runs ----
+    ckpt_dir = f"checkpoints/{args.dataset}"
     base_cfg_kwargs = dict(
         splits_dir=args.splits_dir,
+        dataset=args.dataset,
+        task_types={"decomp": "regression"} if is_eicu else None,
+        ckpt_dir=ckpt_dir,
         n_rounds=args.n_rounds,
         batch_size=args.batch_size,
         device=args.device,
@@ -267,8 +300,8 @@ def main() -> None:
         mode = "uniform"
 
         for seed in SEEDS:
-            model_name = f"DP-uniform-eps{eps_label}-seed{seed}"
-            print(f"\n=== uniform | ε={eps_label} | seed={seed} | σ={sigma} ===")
+            model_name = f"{args.dataset}-DP-uniform-eps{eps_label}-seed{seed}"
+            print(f"\n=== {args.dataset} | uniform | ε={eps_label} | seed={seed} | σ={sigma} ===")
             cfg = TrainConfig(
                 seed=seed,
                 model_name=model_name,
@@ -284,8 +317,8 @@ def main() -> None:
     if stratified_ok and args.run_stratified:
         privacy_cfg_strat = _build_stratified_privacy_config(stratified_sigma)
         for seed in SEEDS:
-            model_name = f"DP-stratified-eps5-seed{seed}"
-            print(f"\n=== stratified | ε_total=5 | seed={seed} ===")
+            model_name = f"{args.dataset}-DP-stratified-eps5-seed{seed}"
+            print(f"\n=== {args.dataset} | stratified | ε_total=5 | seed={seed} ===")
             cfg = TrainConfig(
                 seed=seed,
                 model_name=model_name,

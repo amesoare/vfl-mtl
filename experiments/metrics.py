@@ -67,6 +67,12 @@ def pheno_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
     return {"macro_auc": macro_auc, "micro_auc": micro_auc}
 
 
+def rlos_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    mae  = float(np.mean(np.abs(y_pred - y_true)))
+    rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+    return {"mae": mae, "rmse": rmse}
+
+
 def compute_all_metrics(
     ihm_true, ihm_prob,
     decomp_true, decomp_prob,

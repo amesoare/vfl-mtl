@@ -1,10 +1,8 @@
 """
-figures/resilience_variance.py — Figure 2: DP Resilience Variance Plot.
-
-Answers SRQ1: how much does DP stochasticity destabilise training?
+figures/resilience_variance.py — DP Resilience Variance Plot.
 
 Single panel:
-  x-axis: ε (log scale)
+  x-axis: ε
   y-axis: std(AUC) across seeds — variance inflation index
   One line per task (IHM, Decomp, Pheno)
 
@@ -28,15 +26,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 plt.rcParams.update({
     "figure.dpi":        150,
-    "font.size":         11,
+    "font.size":         15,
     "font.family":       "serif",
     "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":    12,
+    "axes.titlesize":    17,
     "axes.titleweight":  "normal",
-    "axes.labelsize":    11,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   10,
+    "axes.labelsize":    15,
+    "xtick.labelsize":   14,
+    "ytick.labelsize":   14,
+    "legend.fontsize":   12,
 })
 
 # Brand palette — matches plot_results_summary.py
@@ -47,8 +45,58 @@ TASK_COLS = {
     "Decomp": ("val_decomp_auroc",      _C[2]),   # dark purple/navy
     "Pheno":  ("val_pheno_macro_auroc", _C[3]),   # dark red
 }
+TASK_COLS_TEST = {
+    "IHM":    ("ihm_auroc",         _C[1]),
+    "Decomp": ("decomp_auroc",      _C[2]),
+    "Pheno":  ("pheno_macro_auroc", _C[3]),
+}
 EPS_ORDER  = [0.5, 1.0, 2.0, 5.0, 10.0, float("inf")]
 EPS_LABELS = ["0.5", "1", "2", "5", "10", "∞"]
+
+
+CLINICAL_FLOORS_RV = {"IHM": 0.75, "Decomp": 0.70, "Pheno": 0.65}
+
+
+def _plot_resilience_std(df: pd.DataFrame, output: Path,
+                         task_cols: dict | None = None) -> None:
+    """std(AUC) across seeds per task as a function of ε."""
+    if task_cols is None:
+        task_cols = TASK_COLS_TEST
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    for task_name, (task_col, color) in task_cols.items():
+        x_plot, y_std = [], []
+        for xi, eps in enumerate(EPS_ORDER):
+            sub = df[df["epsilon_level"] == eps][task_col].dropna()
+            if sub.empty:
+                continue
+            x_plot.append(xi)
+            y_std.append(float(sub.std()))
+        ax.plot(x_plot, y_std, color=color, marker="o", ms=8,
+                linewidth=2.5, label=task_name)
+
+    ax.set_xticks(range(len(EPS_ORDER)))
+    ax.set_xticklabels(EPS_LABELS, fontsize=26)
+    ax.set_xlabel("Privacy budget ε", fontsize=28)
+    ax.set_ylabel("Std(AUC-ROC) across seeds", fontsize=28)
+    ax.set_title(
+        "AUC-ROC standard deviation across seeds as a function of privacy budget ε",
+        fontsize=32,
+    )
+    ax.tick_params(axis="y", labelsize=26)
+    ax.legend(fontsize=22)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    print(f"Saved → {out}")
+    plt.close(fig)
 
 
 def main():
@@ -59,42 +107,20 @@ def main():
                         help="Which DP mode to plot (uniform or stratified)")
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input)
-    df["epsilon_level"] = pd.to_numeric(df["epsilon_level"], errors="coerce").fillna(float("inf"))
-
-    df = df.groupby(["mode", "epsilon_level", "seed"]).last().reset_index()
-    df = df[df["mode"] == args.mode]
-
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-
-    for task_name, (task_col, color) in TASK_COLS.items():
-        x_plot, y_std = [], []
-        for eps in EPS_ORDER:
-            sub = df[df["epsilon_level"] == eps][task_col]
-            if sub.empty:
-                continue
-            x_plot.append(EPS_ORDER.index(eps))
-            y_std.append(float(sub.std()))
-
-        ax.plot(x_plot, y_std, color=color, marker="o", ms=4, linewidth=1.4,
-                label=task_name)
-
-    ax.set_xticks(range(len(EPS_ORDER)))
-    ax.set_xticklabels(EPS_LABELS)
-    ax.set_xlabel("Privacy budget ε")
-    ax.set_ylabel("Std(AUC-ROC) across seeds")
-    ax.set_title("AUC-ROC standard deviation across seeds as a function of privacy budget ε")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(bottom=0)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    fig.tight_layout()
     out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"Saved → {out}")
+
+    test_dp = Path("results/test_results_dp.csv")
+    if test_dp.exists():
+        df = pd.read_csv(test_dp)
+        df["epsilon_level"] = pd.to_numeric(
+            df["epsilon_level"], errors="coerce").fillna(float("inf"))
+        _plot_resilience_std(df, out, task_cols=TASK_COLS_TEST)
+    else:
+        df = pd.read_csv(args.input)
+        df["epsilon_level"] = pd.to_numeric(
+            df["epsilon_level"], errors="coerce").fillna(float("inf"))
+        df = df.groupby(["mode", "epsilon_level", "seed"]).last().reset_index()
+        _plot_resilience_std(df[df["mode"] == args.mode], out)
 
 
 if __name__ == "__main__":

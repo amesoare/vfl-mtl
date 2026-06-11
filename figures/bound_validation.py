@@ -30,15 +30,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 plt.rcParams.update({
     "figure.dpi":        150,
-    "font.size":         11,
+    "font.size":         15,
     "font.family":       "serif",
     "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
-    "axes.titlesize":    12,
+    "axes.titlesize":    17,
     "axes.titleweight":  "normal",
-    "axes.labelsize":    11,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   10,
+    "axes.labelsize":    15,
+    "xtick.labelsize":   14,
+    "ytick.labelsize":   14,
+    "legend.fontsize":   12,
 })
 
 # Brand palette — matches plot_results_summary.py
@@ -92,7 +92,8 @@ def main():
     ax.set_ylabel("Label Inference AUC")
     ax.set_title("Theoretical label inference bound vs. empirical attack AUC across privacy budgets")
     ax.set_ylim(0.45, 1.05)
-    ax.legend(loc="upper right", ncol=2)
+    ax.legend(loc="upper right", ncol=2, fontsize=8,
+              handlelength=1.2, handletextpad=0.4, borderpad=0.4)
     ax.grid(True, alpha=0.3)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

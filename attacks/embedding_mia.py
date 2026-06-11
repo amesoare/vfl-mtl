@@ -1,28 +1,11 @@
 """
 attacks/embedding_mia.py — Membership inference attack on VFL cut-layer embeddings.
 
-Threat model (honest-but-curious server):
-  The server has seen training-set embeddings repeatedly during training.
-  A binary classifier is trained to distinguish member (training-set)
-  from non-member (validation-set) patients based on their cut-layer embeddings.
+Binary LR on z_concat distinguishes training (member) from test (non-member) patients.
+Target under sufficient DP: AUC ≈ 0.50. Output: results/embedding_mia.csv
 
-Attack (consistent with Weng et al. 2021, Luo et al. CCS 2021):
-  - Members:     80% of training-set embeddings (train the attack classifier)
-  - Non-members: 80% of test-set embeddings (balanced sample)
-  - Hold-out 20% of each for evaluation
-  - Binary logistic regression: input = z_concat (B, 3 × embed_dim)
-  - Target under sufficient DP: attack AUC ≈ 0.50
-
-Note: gradient-norm MIA (Carlini et al. 2022) not used — requires white-box
-gradient access; in VFL the server observes cut-layer embeddings, not raw
-parameter gradients.
-
-Output: results/embedding_mia.csv
-  columns: epsilon_level, mode, seed, attack_auc, attack_accuracy
-
-Usage
------
-  python attacks/embedding_mia.py --use_synthetic --n_rounds 3
+Usage:
+  python attacks/embedding_mia.py --use_synthetic
   python attacks/embedding_mia.py --splits_dir data/vertical_splits
 """
 
@@ -45,9 +28,9 @@ from fl.client import VFLClient
 from fl.server import VFLServer
 from train import make_synthetic_loaders
 
-# ---------------------------------------------------------------------------
+
 # Constants matching privacy_utility_curves.py
-# ---------------------------------------------------------------------------
+
 
 SEEDS           = [42, 123, 7]
 EPSILON_LEVELS  = ["inf", "10.0", "5.0", "2.0", "1.0", "0.5"]
@@ -55,9 +38,9 @@ EMBED_DIM       = 64
 SITE_INPUT_DIMS = {"A": 7, "B": 4, "C": 3}
 
 
-# ---------------------------------------------------------------------------
+
 # Helpers
-# ---------------------------------------------------------------------------
+
 
 def _ckpt_path(ckpt_dir: str, eps_label: str, mode: str, seed: int) -> Path:
     if str(eps_label) == "inf":
@@ -94,10 +77,6 @@ def _extract_concat_embeddings(
     loaders: dict,
     device: torch.device,
 ) -> np.ndarray:
-    """
-    Extract concatenated cut-layer embeddings [z_A | z_B | z_C] for all batches.
-    Returns (N, 3 * embed_dim).
-    """
     emb_parts: list[np.ndarray] = []
 
     for batch_A, batch_B, batch_C in zip(loaders["A"], loaders["B"], loaders["C"]):
@@ -120,21 +99,7 @@ def run_mia(
     test_size: float = 0.2,
     random_state: int = 0,
 ) -> dict[str, float]:
-    """
-    Train a binary MIA classifier and return attack metrics.
-
-    Parameters
-    ----------
-    z_members    : (N_m, D) — training-set (member) embeddings
-    z_nonmembers : (N_nm, D) — validation-set (non-member) embeddings
-    test_size    : fraction held out for evaluation
-    random_state : random seed for train/test split
-
-    Returns
-    -------
-    {'attack_auc': float, 'attack_accuracy': float}
-    Target under sufficient DP: AUC ≈ 0.50, accuracy ≈ 0.50
-    """
+    """Train binary LR classifier and return {'attack_auc', 'attack_accuracy'}."""
     n_m  = len(z_members)
     n_nm = len(z_nonmembers)
     n    = min(n_m, n_nm)  # balanced attack dataset
@@ -167,9 +132,9 @@ def run_mia(
     return {"attack_auc": auc, "attack_accuracy": acc}
 
 
-# ---------------------------------------------------------------------------
+
 # Per-experiment runner
-# ---------------------------------------------------------------------------
+
 
 def _run_one(
     eps_label: str,
@@ -212,9 +177,9 @@ def _run_one(
     return metrics
 
 
-# ---------------------------------------------------------------------------
+
 # Main
-# ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
