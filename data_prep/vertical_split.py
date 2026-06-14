@@ -9,7 +9,7 @@ representing three simulated hospital sites, per CLAUDE.md Week 1 Step 7.
                           Task label: in-hospital mortality (binary)
 
     Site B (4 labs)     : Glucose, pH, FiO2, CapRefill
-                          Task label: length-of-stay in hours (regression)
+                          Task label: decompensation (binary, 24h window)
 
     Site C (3 composite): Height, Weight, MeanBP
                           Task label: phenotyping (25 binary ICD codes)
